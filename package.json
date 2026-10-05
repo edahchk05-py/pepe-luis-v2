@@ -1,5 +1,13 @@
 {
   "name": "pepe-luis-v2",
   "version": "1.0.0",
-  "type": "module"
+  "type": "module",
+  "devDependencies": {
+    "node-html-parser": "^9.0.4"
+  },
+  "scripts": {
+    "knowledge": "node scripts/build-knowledge.mjs",
+    "knowledge:check": "node scripts/build-knowledge.mjs --check",
+    "test": "node scripts/test-concierge.mjs"
+  }
 }

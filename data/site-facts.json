@@ -1,0 +1,19 @@
+{
+  "_comment": "Generated from index.html by scripts/build-knowledge.mjs. Do not edit by hand.",
+  "phoneLocal": "06 19 53 69 33",
+  "phoneE164": "+212619536933",
+  "whatsappNumber": "212619536933",
+  "hours": {
+    "opens": "12:00",
+    "closes": "00:00",
+    "days": "Lundi – Dimanche"
+  },
+  "address": "H9Q6+F2Q, Casablanca 20250, Maroc",
+  "mapsLink": "https://www.google.com/maps/dir/?api=1&destination=Pepe+Luis+Casablanca",
+  "menu": {
+    "items": 62,
+    "sharingPlatters": 9,
+    "sections": 8,
+    "fingerprint": "147b5f5e41b916446dd9ae7478d9fd507e8ce6c67ff37cbdb486662a966b2193"
+  }
+}
