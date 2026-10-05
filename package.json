@@ -1,8 +1,5 @@
 {
   "name": "pepe-luis-v2",
   "version": "1.0.0",
-  "type": "module",
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.30.0"
-  }
+  "type": "module"
 }
