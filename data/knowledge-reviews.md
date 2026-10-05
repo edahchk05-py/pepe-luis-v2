@@ -1,0 +1,4 @@
+CUSTOMER REVIEWS quoted on the website (guests' opinions, not promises from the restaurant):
+"J'adore la paella et je suis très exigeante sur l'endroit où je la commande. Cette paella était vraiment très bonne — c'est maintenant la deuxième meilleure que j'aie mangée de ma vie. Je l'ai vraiment été impressionnée. Je la recommande à 100%." — Queen Tega, Guide Local · 233 avis
+"Restaurant espagnol incroyable ! Les calamars et les crevettes étaient absolument délicieux — frais, parfaitement cuits et pleins de saveurs. Tout a dépassé mes attentes. Merci particulièrement à Hamouda pour l'excellent service !" — Ilke Kaya, Client Vérifié
+"Nous avons découvert ce restaurant par hasard et nous l'avons adoré ! On reçoit une entrée, puis la paella — absolument délicieuse ! Le personnel est très attentionné et a même arrangé un serveur anglophone pour nous." — Melissa H., Guide Local · 31 avis

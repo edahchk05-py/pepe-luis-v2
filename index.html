@@ -2281,7 +2281,7 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
     <div class="cp-messages" id="cp-messages"></div>
     <div class="cp-input-area">
-      <textarea class="cp-input" id="cp-input" placeholder="Posez votre question..." rows="1" onkeydown="cpKeydown(event)" oninput="cpAutoResize(this)"></textarea>
+      <textarea class="cp-input" id="cp-input" placeholder="Posez votre question..." rows="1" maxlength="600" onkeydown="cpKeydown(event)" oninput="cpAutoResize(this)"></textarea>
       <button class="cp-send" id="cp-send" onclick="cpSend()" aria-label="Envoyer">
         <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
       </button>
@@ -2400,7 +2400,7 @@ async function cpSend() {
     var response = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: cpMessages }),
+      body: JSON.stringify({ messages: cpMessages.slice(-12) }),
       signal: controller.signal
     });
     var data = null;
@@ -2423,7 +2423,9 @@ async function cpSend() {
         requestId: data && data.requestId || null
       });
       var temporary = apiErr.retryable === true || response.status === 503 || response.status === 429;
-      failText = temporary
+      failText = apiErr.code === 'RATE_LIMITED'
+        ? 'Vous avez envoyé beaucoup de messages en peu de temps. Merci de patienter un instant avant de réessayer, ou contactez-nous au +212 6 19 53 69 33.'
+        : temporary
         ? 'Notre concierge est très sollicité en ce moment. Merci de réessayer dans quelques instants, ou contactez-nous directement au +212 6 19 53 69 33.'
         : 'Désolé, une erreur s\'est produite. Veuillez réessayer ou contacter le restaurant directement au +212 6 19 53 69 33.';
     }

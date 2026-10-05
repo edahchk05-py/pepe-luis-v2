@@ -1,6 +1,6 @@
 // Builds the AI concierge's knowledge from the website itself.
 //
-//   npm run knowledge          → regenerate data/knowledge.md + data/site-facts.json
+//   npm run knowledge          → regenerate data/knowledge.md, data/knowledge-reviews.md, data/site-facts.json
 //   npm run knowledge:check    → fail if those files are out of date with index.html
 //
 // Source of truth: index.html. Nothing here is typed by hand: every dish, price,
@@ -16,6 +16,7 @@ import { parse } from "node-html-parser";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE = join(ROOT, "index.html");
 const OUT_MD = join(ROOT, "data", "knowledge.md");
+const OUT_REVIEWS = join(ROOT, "data", "knowledge-reviews.md");
 const OUT_JSON = join(ROOT, "data", "site-facts.json");
 const CHECK_ONLY = process.argv.includes("--check");
 
@@ -54,14 +55,10 @@ for (const tab of overlay.querySelectorAll(".mo-tab")) {
 }
 must([...tabs.keys()], "menu tabs (.mo-tab)");
 
-// Prices are shown on the site as bare numbers; the menu states they are in dirhams.
-function price(raw) {
-  const p = norm(raw);
-  if (/^\d[\d ]*$/.test(p)) return `${p} dhs`;
-  const perUnit = /^(\d[\d ]*) \/ (.+)$/.exec(p);
-  if (perUnit && !/dhs/i.test(p)) return `${perUnit[1]} dhs / ${perUnit[2]}`;
-  return p; // already carries its unit (e.g. "250 dhs", caviar by weight)
-}
+// Prices are kept exactly as the site prints them: bare numbers, with the unit
+// where the site gives one ("10 / pièce", "45 / 100g"). The menu header states
+// that prices are in dirhams.
+const price = (raw) => norm(raw);
 
 const sections = [];
 const canonicalItems = []; // section|name|description|raw price — used to compare with the live page
@@ -165,8 +162,7 @@ for (const item of root.querySelectorAll(".numbers .num-item")) {
   const big = item.querySelector(".num-big");
   const lbl = item.querySelector(".num-lbl");
   if (!big || !lbl || /^\d\.\d$/.test(text(big))) continue; // skip the rating tile
-  const bigEn = en(big) ?? text(big);
-  highlights.push({ fr: `${text(big)} — ${text(lbl)}`, en: en(lbl) ? `${bigEn} — ${en(lbl)}` : null });
+  highlights.push({ fr: text(lbl), en: en(lbl) });
 }
 must(highlights, "the highlights (trust strip / numbers band)");
 
@@ -188,78 +184,49 @@ const reviews = root.querySelectorAll(".reviews-grid .rcard").map((card) => ({
 })).filter((r) => r.quote && r.author);
 
 // ── render ───────────────────────────────────────────────────────────
-const both = (frText, enText) => (enText && enText !== frText ? `${frText} (EN: ${enText})` : frText);
+// Compact on purpose: this text is sent to the AI with every message. It keeps
+// every fact and every menu line, in the site's own (French) wording. The site's
+// English duplicates are left out (the AI translates), except section names.
 const lines = [];
 const out = (s = "") => lines.push(s);
+const unique = (list) => [...new Set(list)];
 
-out("# PEPE LUIS — VERIFIED KNOWLEDGE");
+out("PEPE LUIS — VERIFIED KNOWLEDGE (generated from the restaurant's website; wording as on the site: French, dish names often Spanish)");
 out("");
-out("Generated from the Pepe Luis website (index.html) by scripts/build-knowledge.mjs.");
-out("Do not edit by hand: change the website, then run `npm run knowledge`.");
-out("Text is given as it appears on the site (French, dish names often Spanish). \"EN:\" marks the site's own English wording where it has one.");
+out("RESTAURANT");
+out(`Name: Pepe Luis — ${tagline}`);
+out(`Hours: ${text(hoursDays)}, ${hoursRange} (every day, ${opens} to ${closes === "00:00" ? "midnight" : closes})`);
+out(`Address as shown on the site (a Google Maps location code; the site gives no street name): ${address}`);
+out(`Directions: ${mapsLink}`);
+out(`Phone: ${phoneLocal} (${phoneE164}) · WhatsApp: +${whatsappNumber} · Instagram: ${text(instaLink)}`);
+out("Reservations: by phone or WhatsApp");
+out(`Services: ${services}`);
+out(`Highlights: ${unique(highlights.map((h) => h.fr)).join(" · ")}`);
+out(`Google rating: ${ratingValue} / 5 — ${ratingCount}`);
+out(`About: ${text(heroSub)} ${text(aboutLead)}`);
+out(`Free starter platter: ${text(startersLead)}`);
+out(`Signature dish — ${paellaTitle}: ${text(paellaLead)}`);
 out("");
-out("## Restaurant");
-out(`- Name: Pepe Luis`);
-out(`- Presented as: ${tagline}`);
-out(`- In the site's words: ${both(text(heroSub), en(heroSub))}`);
-out(`- About: ${both(text(aboutLead), en(aboutLead))}`);
-out(`- Also described as: ${both(text(footerBlurb), en(footerBlurb))}`);
-out("");
-out("## Opening hours");
-out(`- ${both(text(hoursDays), en(hoursDays))}: ${hoursRange} (opens ${opens}, closes ${closes === "00:00" ? "at midnight" : closes})`);
-out("");
-out("## Address and directions");
-out(`- Address as shown on the site: ${address}`);
-out(`- This is a Google Maps location code, not a street address. The site gives no street name.`);
-out(`- Google Maps directions: ${mapsLink}`);
-out("");
-out("## Contact and reservations");
-out(`- Phone: ${phoneLocal} (international: ${phoneE164})`);
-out(`- WhatsApp: +${whatsappNumber}`);
-out(`- Instagram: ${text(instaLink)}`);
-out(`- Reservations on the site are made by phone or by WhatsApp message to the numbers above.`);
-out("");
-out("## Services");
-out(`- ${both(services, en(servicesEl))}`);
-out("");
-out("## Highlights shown on the site");
-for (const h of highlights) out(`- ${both(h.fr, h.en)}`);
-out("");
-out("## The free starter platter");
-if (startersQuote) out(`- "${startersQuote}"`);
-out(`- ${both(text(startersLead), en(startersLead))}`);
-out("");
-out(`## Signature dish: ${paellaTitle}`);
-if (paellaEyebrow) out(`- Presented as: ${both(text(paellaEyebrow), en(paellaEyebrow))}`);
-if (paellaQuote) out(`- "${paellaQuote}"`);
-out(`- ${both(text(paellaLead), en(paellaLead))}`);
-if (paellaTags.length) out(`- Keywords: ${paellaTags.join(" · ")}`);
-out("");
-out("## Google rating");
-out(`- ${ratingValue} / 5 — ${ratingCount}`);
-out("");
-if (reviews.length) {
-  out("## Customer reviews quoted on the site (opinions of guests, not promises from the restaurant)");
-  for (const r of reviews) out(`- "${r.quote}" — ${r.author}${r.meta ? `, ${r.meta}` : ""}`);
-  out("");
-}
-out("## MENU");
-out("");
-out(`The complete menu: ${canonicalItems.length} priced items and ${canonicalShares.length} sharing platters, in ${sections.length} sections. If a dish is not listed below, it is not on the menu.`);
-out("All prices are in Moroccan dirhams (dhs).");
-out("");
+out(`MENU — complete: ${sections.length} sections, ${canonicalItems.length} priced items, ${canonicalShares.length} sharing platters. A dish not listed here is not on the menu. Each line: name — description — price. Every price is in Moroccan dirhams (dhs), as printed on the site.`);
 for (const section of sections) {
-  out(`### ${both(section.fr, section.en)}`);
-  for (const e of section.entries) {
-    if (e.type === "heading") out(`**${both(e.fr, e.en)}**`);
-    else if (e.type === "note") out(`Note: ${both(e.fr, e.en)}`);
-    else if (e.type === "item") out(`- ${both(e.name, e.nameEn)}${e.description ? ` — ${e.description}` : ""} — ${e.price}`);
-    else out(`- ${e.name} (to share)${e.description ? ` — ${e.description}` : ""} — ${e.price}`);
-  }
   out("");
+  out(`[${section.fr}${section.en && section.en !== section.fr ? ` | EN: ${section.en}` : ""}]`);
+  for (const e of section.entries) {
+    if (e.type === "heading") out(`· ${e.fr} ·`);
+    else if (e.type === "note") out(`(note) ${e.fr}`);
+    else if (e.type === "item") out(`${e.name}${e.description ? ` — ${e.description}` : ""} — ${e.price}`);
+    else out(`${e.name} (to share)${e.description ? ` — ${e.description}` : ""} — ${e.price}`);
+  }
 }
-
 const markdown = lines.join("\n").trimEnd() + "\n";
+
+// Customer reviews are only sent when a guest asks about reviews or ratings.
+const reviewsText = reviews.length
+  ? "CUSTOMER REVIEWS quoted on the website (guests' opinions, not promises from the restaurant):\n" +
+    reviews.map((r) => `"${r.quote}" — ${r.author}${r.meta ? `, ${r.meta}` : ""}`).join("\n") +
+    "\n"
+  : "";
+
 const facts = {
   _comment: "Generated from index.html by scripts/build-knowledge.mjs. Do not edit by hand.",
   phoneLocal,
@@ -272,17 +239,22 @@ const facts = {
 };
 const json = JSON.stringify(facts, null, 2) + "\n";
 
+const outputs = [
+  [OUT_MD, markdown],
+  [OUT_REVIEWS, reviewsText],
+  [OUT_JSON, json],
+];
+
 if (CHECK_ONLY) {
-  const current = existsSync(OUT_MD) && existsSync(OUT_JSON) && readFileSync(OUT_MD, "utf8") === markdown && readFileSync(OUT_JSON, "utf8") === json;
+  const current = outputs.every(([file, content]) => existsSync(file) && readFileSync(file, "utf8") === content);
   if (!current) {
     console.error("Knowledge is OUT OF DATE with index.html. Run: npm run knowledge");
     process.exit(1);
   }
   console.log(`Knowledge is up to date (${canonicalItems.length} items, ${canonicalShares.length} platters).`);
 } else {
-  writeFileSync(OUT_MD, markdown);
-  writeFileSync(OUT_JSON, json);
-  console.log(`Wrote data/knowledge.md (${markdown.length} chars) and data/site-facts.json`);
+  for (const [file, content] of outputs) writeFileSync(file, content);
+  console.log(`Wrote data/knowledge.md (${markdown.length} chars), data/knowledge-reviews.md (${reviewsText.length} chars) and data/site-facts.json`);
   console.log(`Menu: ${sections.length} sections, ${canonicalItems.length} items, ${canonicalShares.length} sharing platters`);
   console.log(`Menu fingerprint: ${menuFingerprint}`);
 }

@@ -3,30 +3,49 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 
 // ── Knowledge ────────────────────────────────────────────────────────
-// Both files are GENERATED from index.html by scripts/build-knowledge.mjs
+// These files are GENERATED from index.html by scripts/build-knowledge.mjs
 // (npm run knowledge). The website is the source of truth; do not edit them.
 const KNOWLEDGE = readFileSync(join(process.cwd(), "data", "knowledge.md"), "utf-8");
+const REVIEWS = readFileSync(join(process.cwd(), "data", "knowledge-reviews.md"), "utf-8");
 const FACTS = JSON.parse(readFileSync(join(process.cwd(), "data", "site-facts.json"), "utf-8"));
 
 // ── Gemini configuration ─────────────────────────────────────────────
 // Model IDs and thinking levels checked against Google's docs and the live API
-// on 2026-10-05. Tried in order: the first is the primary, the rest are fallbacks.
+// on 2026-10-05. Tried in order: the first answers everything; the second is
+// used only when the first fails (no answer, server error, rate limit, unreadable
+// output). Replies are 60–130 tokens, so the output caps are generous; the
+// fallback's is higher because its thinking tokens count against it.
 const MODELS = [
-  { id: "gemini-3.5-flash-lite", thinkingLevel: "minimal", maxAttempts: 3 },
-  { id: "gemini-3.8-flash", thinkingLevel: "low", maxAttempts: 2 },
+  { id: "gemini-3.5-flash-lite", thinkingLevel: "minimal", maxAttempts: 3, maxOutputTokens: 500 },
+  { id: "gemini-3.8-flash", thinkingLevel: "low", maxAttempts: 2, maxOutputTokens: 700 },
 ];
 
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-const MAX_HISTORY_TURNS = 30;
-const MAX_OUTPUT_TOKENS = 1024;
+
+// What each request may carry.
+const MAX_HISTORY_MESSAGES = 12; // booking details travel separately, so trimming never loses them
+const MAX_MESSAGE_CHARS = 600; // one guest message
+const MAX_STORED_REPLY_CHARS = 1500; // one earlier assistant message, as sent back by the browser
 
 // Retry timing. A failed attempt usually comes back in well under a second.
 const BACKOFF_BASE_MS = 400; // 400ms, then 800ms, plus jitter
 const BACKOFF_MAX_MS = 1600;
 const BACKOFF_JITTER_MS = 250;
 const MAX_HONORED_RETRY_DELAY_MS = 2000; // longer server-requested waits → switch model instead
-const ATTEMPT_TIMEOUT_MS = 8000;
+// A model that has sent nothing after 6 seconds is treated as stalled and the
+// next model is asked. A model that HAS started answering is left to finish (up
+// to the hard limit), so a slow but real answer is never thrown away and asked twice.
+const FIRST_BYTE_TIMEOUT_MS = 6000;
+const ATTEMPT_HARD_LIMIT_MS = 14000;
 const TOTAL_BUDGET_MS = 22000; // the function itself is capped at 30s in vercel.json
+
+// Visitor rate limit. Counted per IP address inside each running server instance,
+// so it is a first line of defence against a script hammering the endpoint, not a
+// guarantee: instances restart and can multiply under load.
+const RATE_LIMIT = {
+  perMinute: Number(process.env.CHAT_RATE_PER_MINUTE) || 12,
+  perDay: Number(process.env.CHAT_RATE_PER_DAY) || 300,
+};
 
 const IS_DEBUG = process.env.VERCEL_ENV !== "production" || process.env.CHAT_DEBUG === "1";
 
@@ -76,62 +95,50 @@ function applyStructuredMode(generationConfig, mode) {
 }
 
 // ── System prompt ────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are the virtual concierge of Pepe Luis, a Spanish restaurant, marisquería and brasserie in Casablanca. You talk with guests on the restaurant's website. You sound like an excellent maître d': warm, quick, refined, natural. Short sentences. No corporate tone, no walls of text. Usually 1 to 4 sentences; use a short list only when the guest asks for several dishes or prices.
+// Kept short: the server enforces the confirmation step, opening hours, past
+// dates and the reply language itself (see resolveTurn), so the prompt only
+// has to describe them once.
+const SYSTEM_PROMPT = `You are the virtual concierge of Pepe Luis, a Spanish restaurant, marisquería and brasserie in Casablanca, chatting with guests on its website. Be an excellent maître d': warm, quick, natural, 1 to 3 short sentences. List dishes only when asked, at most 8 per reply (the full menu is under "Voir le Menu" on the site).
 
-OUTPUT FORMAT
-Return exactly one JSON object and nothing else:
-{"language":"fr|en|ar|other","reply":"...","reservation":{"stage":"none|collecting|awaiting_confirmation|confirmed|cancelled","guests":<integer or null>,"date":"YYYY-MM-DD" or null,"time":"HH:MM" or null,"name":<string or null>,"phone":<string or null>,"note":<string or null>}}
+Return ONE JSON object only:
+{"language":"fr|en|ar|other","reply":"...","reservation":{"stage":"none|collecting|awaiting_confirmation|confirmed|cancelled","guests":<integer|null>,"date":<"YYYY-MM-DD"|null>,"time":<"HH:MM"|null>,"name":<string|null>,"phone":<string|null>,"note":<string|null>}}
 
 LANGUAGE
-- "language" is the language of the guest's LATEST message: "fr" French, "en" English, "ar" Arabic or Moroccan Darija (in Arabic or Latin letters), "other" anything else.
-- Write "reply" in that same language. English message, English reply. French message, French reply. Arabic message, Arabic reply. Darija message, Darija reply in the script the guest used. Any other language, reply in it.
-- Never fall back to French because this prompt, the menu, or earlier messages are in French.
-- If the latest message has no language of its own (a number, a name, a phone number, "ok", an emoji), continue in the language of the guest's previous messages. Only if there are none, use French.
-- Mixed messages ("Can I réserver pour 4 people tomorrow?"): understand the intent; reply in the language that dominates the message.
-- Keep dish names exactly as written on the menu, in every language: write "Paella Negra", never "Paella Noire" or "Black Paella"; never translate "Pulpo a la Gallega". You may explain a dish in the guest's language.
-- In Arabic replies use Arabic letters only, plus Latin letters for dish names, phone numbers and "Pepe Luis".
+- "language" is the language of the guest's LATEST message ("ar" = Arabic or Darija); write "reply" in it. English → English, French → French, Arabic → Arabic. Never default to French because the menu or earlier messages are French.
+- No language of its own (a number, a name, "ok"): keep the guest's previous language, otherwise French. Mixed message: understand it and follow the dominant language.
+- Dish names stay exactly as on the menu in every language ("Paella Negra", never "Paella Noire"). In Arabic, use Latin letters only for dish names, numbers and "Pepe Luis".
 
-KNOWLEDGE RULES
-- Everything you state about Pepe Luis (dishes, prices, hours, address, services) must come from the VERIFIED KNOWLEDGE below. It is the restaurant's current website content and the only source you have.
-- If a dish, price or fact is not in the knowledge, you do not know it. Never invent, never guess, never add "typical" Spanish dishes. If asked for a dish that is not on the menu, say it is not on the menu and offer the closest real ones.
-- Quote prices exactly, with their unit (per piece, per 100g, per person, for 2 or for 4 people). A 5% service charge is not included, as the menu notes.
-- "Parillada de Pescados" and "Parillada Mixta" each appear twice, at different prices, in two sections (Assortiments and Grillades). When asked about them, give both versions and say which section each belongs to.
-- "Paella aux Fruits de Mer" (per person, in Plats & Cazuelas) is a different listing from the Paellas section (priced for 2 or for 4 people). Be precise about which one you mean.
-- When the knowledge does not cover something (wine or alcohol, parking, terrace, allergens, vegetarian or halal guarantees, payment methods, delivery areas, private events, dress code, children's menu...), say plainly that you don't have that information and give the restaurant's phone number. For dietary questions you may point to menu items whose written description fits, and add that ingredients should be confirmed with the restaurant.
-- Recommendations: suggest only real menu items, with prices, and give reasons taken from the menu descriptions or the site's own words.
-- Describe a dish only with what its own menu line, or the site's text about that specific dish, says. Do not attach a cooking method, ingredient or origin to a dish unless the knowledge says it for that dish (for example, do not say a dish is "cooked over a wood fire" just because the restaurant has wood-fire cooking).
-- Customer reviews in the knowledge are guests' opinions. You may mention them as reviews, never as promises.
-- Unrelated but harmless questions (a sum, a joke, small talk): answer in one short friendly sentence, then bring it back to Pepe Luis. Do not write long off-topic answers.
-- You cannot see table availability. You never confirm a booking yourself.
-- You cannot take food, delivery or click & collect orders. If asked, say which services exist and give the phone number to order.
-- Fish, tuna, shellfish and seafood are not vegetarian. This is a seafood restaurant: be honest that most of the menu is fish and seafood. Mention a dish as possibly suitable for a vegetarian only if neither its name nor its description contains meat, fish or seafood, and say it should be confirmed with the restaurant.
+FACTS
+- Say only what the KNOWLEDGE below states; it is the restaurant's website and your only source. Anything else you do not know: say so and give the phone number. Never invent or assume a dish, price, ingredient or cooking method. A dish that is not listed is not on the menu: say so and offer the closest real ones.
+- Give prices exactly, with their unit (per piece, per 100g, per person, for 2 or 4), in dirhams (dhs). 5% service is not included.
+- "Parillada de Pescados" and "Parillada Mixta" each exist twice at different prices (Assortiments and Grillades): give both and name the section. "Paella aux Fruits de Mer" (per person, Plats & Cazuelas) is not the Paellas section (for 2 or 4).
+- Not on the site: wine or alcohol, parking, terrace, allergens, halal or vegetarian guarantees, payment methods, delivery areas, private events.
+- Fish and seafood are not vegetarian and most of the menu is seafood: say so. Suggest a dish to a vegetarian only if its name and description contain no meat, fish or seafood, and say to confirm with the restaurant.
+- You cannot see availability, confirm a booking, take orders or pre-order dishes; never offer to. For orders give the phone number.
+- Reviews, when shown below, are guests' opinions, not promises; otherwise give the Google rating.
+- Harmless off-topic question: one short friendly sentence, then back to Pepe Luis.
 
 RESERVATIONS
-You help the guest prepare a reservation REQUEST. The guest then sends it to the restaurant on WhatsApp, and the restaurant confirms it. You do not confirm it.
+You prepare a reservation REQUEST; the guest sends it on WhatsApp and the restaurant confirms it, never you.
+- Needed: guests, date, time, name, phone. "note" only if the guest mentions an occasion, an allergy or a wish; never ask for it.
+- Start as soon as the guest wants to book, in any language; never ask "would you like to book?".
+- Keep everything already given, in any order; never ask twice; accept corrections. Ask only for what is missing, at most two things per message, in this order: guests, date, time, then name and phone together.
+- Side question during a booking: answer it, then ask for the next missing detail in the same reply.
+- date: YYYY-MM-DD read from the CALENDAR below, never computed. time: 24-hour HH:MM ("8pm", "20h" → "20:00"); a vague time ("evening", "le soir") is not a time: leave it null and ask for the hour.
+- Open every day 12:00 to midnight. Refuse a time before 12:00, or a date or time already past (see NOW): explain kindly and ask for another.
+- phone: the digits as the guest wrote them.
+Stages:
+- "none": no booking in progress. "collecting": something is missing; your reply asks for it.
+- "awaiting_confirmation": all five are known and the guest has not yet agreed to them. Do NOT summarise and do NOT ask for confirmation: the system does both. "reply" is "" unless the guest just asked a question (then only its answer).
+- "confirmed": ONLY if the previous assistant message was the summary AND the guest now clearly says yes (yes, oui, ok, d'accord, نعم, واخا). "reply" is "". If the guest changes a detail instead, use "awaiting_confirmation" with the new details.
+- "cancelled": the guest gave up.
+Always fill every field you know (null otherwise). After a request has been prepared, go back to "none" unless the guest wants a change.`;
 
-Details needed: guests (number of people), date, time, name, phone. Optional: note (occasion, allergy, seating wish), only if the guest brings one up. Do not ask for a note.
+// Unchanging text first, so every request starts with the same prefix.
+const STATIC_INSTRUCTION = SYSTEM_PROMPT + "\n\n---\n\nKNOWLEDGE\n\n" + KNOWLEDGE;
 
-How to run it:
-- Start as soon as the guest shows any intent to book ("book", "réserver", "une table pour 4", "on vient ce soir", "حجز", "بغيت نحجز", "bghit n7jez"...). Never ask "would you like to book?".
-- Take everything the guest already gave, in any order, in one message or across several. Never ask again for something you already have.
-- Ask only for what is missing, at most two things per message, in a natural order: people, date, time, then name and phone. Name and phone may be asked together; never ask for the time, the name and the phone all in one message. It must feel like a conversation, not a form.
-- Accept corrections at any moment ("actually make it 5", "plutôt 21h").
-- If the guest asks something else in the middle, answer it, then in the same reply ask for the next missing detail, keeping everything already given.
-- You cannot pre-order food or add dishes to a reservation. Never offer to. If the guest asks for something specific (a dish, an occasion, a seating wish), put it in "note".
-- date: write it as YYYY-MM-DD using the CALENDAR given after the knowledge. Never compute dates yourself.
-- time: 24-hour HH:MM. "8pm", "20h", "8 du soir" all mean "20:00". A vague time ("evening", "ce soir", "lunch", "le soir") is not a time: keep time null and ask for the hour.
-- The restaurant is open every day from 12:00 to midnight. Do not accept a time before 12:00, or a date or time that is already past (compare with NOW, given after the knowledge): explain kindly and ask for another.
-- phone: copy the digits as the guest wrote them.
-
-"reservation.stage":
-- "none": no reservation in progress.
-- "collecting": a reservation is in progress and at least one of the five details is missing. Your reply asks for what is missing.
-- "awaiting_confirmation": all five details are known and the guest has not yet said yes to exactly this set. IMPORTANT: at this stage do NOT write the summary and do NOT ask for confirmation. The system adds the summary and the confirmation question itself. Your "reply" must be an empty string, unless the guest just asked a question, in which case "reply" contains only the answer to it.
-- "confirmed": ONLY when the previous assistant message was the summary asking for confirmation AND the guest's latest message clearly says yes (yes, oui, ok, d'accord, go ahead, send it, نعم, واخا, wakha...). At this stage "reply" must be an empty string; the system adds the WhatsApp button and the closing message. If the guest changes a detail instead of saying yes, use "awaiting_confirmation" with the updated details.
-- "cancelled": the guest gave up on the reservation.
-At every stage, fill in every reservation field you know and use null for the others. Once a request has been prepared (after "confirmed"), go back to "none" unless the guest wants to change it.`;
-
-const STATIC_INSTRUCTION = SYSTEM_PROMPT + "\n\n---\n\nVERIFIED KNOWLEDGE (the restaurant's website content). The current date and the reservation state follow after it.\n\n" + KNOWLEDGE;
+// Guests' reviews are only added when the conversation turns to reviews or ratings.
+const REVIEWS_HINT = /avis|review|opinion|rating|rated|étoile|etoile|star|témoignage|temoignage|testimon|commentaire|google|recommand|say about|disent|تقييم|آراء|رأي/i;
 
 const DAY_MS = 86400000;
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -163,29 +170,20 @@ function formatDate(iso, locale, options = { weekday: "long", day: "numeric", mo
   return new Intl.DateTimeFormat(locale, { ...options, timeZone: "UTC", numberingSystem: "latn" }).format(new Date(isoToUtc(iso)));
 }
 
+// Today's date and the next two weeks, so "tomorrow", "ce soir" or "vendredi"
+// are looked up rather than calculated by the model.
 function buildDateContext(now) {
-  const lines = [
-    `NOW in Casablanca: ${formatDate(now.date, "en-GB")}, ${now.time} (24-hour clock).`,
-    "CALENDAR — use this to turn what the guest says into a date. Do not compute dates yourself.",
-  ];
-  for (let i = 0; i < 15; i++) {
+  const days = [];
+  for (let i = 0; i < 14; i++) {
     const iso = addDays(now.date, i);
-    const weekday = formatDate(iso, "en-GB", { weekday: "long" });
-    const tag =
-      i === 0
-        ? ' = TODAY ("aujourd\'hui", "ce soir", "tonight", "this evening", "اليوم")'
-        : i === 1
-          ? ' = TOMORROW ("demain", "غدا", "ghedda")'
-          : "";
-    lines.push(`${iso} ${weekday}${tag}`);
+    const weekday = formatDate(iso, "en-GB", { weekday: "short" });
+    days.push(`${iso} ${weekday}${i === 0 ? " = today" : i === 1 ? " = tomorrow" : ""}`);
   }
-  lines.push(
-    'A weekday name ("Friday", "vendredi", "الجمعة") means its first occurrence after today in this list. "Next week" plus a weekday means the occurrence in the following week.',
-    "If today is that weekday and the guest might mean today, ask which one.",
-    'For a calendar date ("25 décembre", "Oct 12") use its next occurrence from today.',
-    `If the guest asks for today at a time that is already past (it is ${now.time} now), say so and ask for another time or day.`
-  );
-  return lines.join("\n");
+  return [
+    `NOW in Casablanca: ${formatDate(now.date, "en-GB", { weekday: "long" })} ${now.date}, ${now.time} (24-hour clock).`,
+    `CALENDAR: ${days.join(" · ")}`,
+    'A weekday name means its first date after today; "next week" plus a weekday means the following one; if today is that weekday, ask which. For any other date use its next occurrence.',
+  ].join("\n");
 }
 
 function buildStateContext(prev) {
@@ -204,10 +202,11 @@ function buildStateContext(prev) {
     .join("\n");
 }
 
-function buildSystemInstruction(now, prev) {
-  // The unchanging part comes first so identical requests share a prefix; the
-  // date and the reservation state, which change, come last.
-  return [STATIC_INSTRUCTION, buildDateContext(now), buildStateContext(prev)].join("\n\n---\n\n");
+function buildSystemInstruction(now, prev, guestText = "") {
+  const parts = [STATIC_INSTRUCTION];
+  if (REVIEWS && REVIEWS_HINT.test(guestText)) parts.push(REVIEWS.trim());
+  parts.push(buildDateContext(now), buildStateContext(prev));
+  return parts.join("\n\n---\n\n");
 }
 
 // ── Reservation logic (deterministic, server-side) ───────────────────
@@ -537,22 +536,54 @@ function log(level, event, fields) {
   else console.log(line);
 }
 
-// Browser history → Gemini "contents": valid turns only, consecutive turns of
-// the same role merged, trimmed to the recent window, starting on a user turn.
+// Browser history → Gemini "contents": the most recent messages only, each capped
+// in length, consecutive turns of the same role merged, starting on a user turn.
 function toGeminiContents(messages) {
   const turns = [];
-  for (const msg of messages) {
+  for (const msg of messages.slice(-MAX_HISTORY_MESSAGES)) {
     if (!msg || typeof msg.content !== "string") continue;
-    const text = msg.content.trim();
-    if (!text) continue;
     const role = msg.role === "assistant" ? "model" : "user";
+    const text = msg.content.trim().slice(0, role === "user" ? MAX_MESSAGE_CHARS : MAX_STORED_REPLY_CHARS);
+    if (!text) continue;
     const last = turns[turns.length - 1];
     if (last && last.role === role) last.parts[0].text += "\n" + text;
     else turns.push({ role, parts: [{ text }] });
   }
-  const recent = turns.slice(-MAX_HISTORY_TURNS);
-  while (recent.length && recent[0].role !== "user") recent.shift();
-  return recent;
+  while (turns.length && turns[0].role !== "user") turns.shift();
+  return turns;
+}
+
+// Per-visitor rate limit (see RATE_LIMIT above).
+const visitors = new Map(); // visitor → { dayStart, dayCount, recent: [timestamps] }
+
+function visitorId(req) {
+  const headers = req.headers ?? {};
+  const raw = headers["x-vercel-forwarded-for"] ?? headers["x-real-ip"] ?? headers["x-forwarded-for"] ?? "";
+  return String(Array.isArray(raw) ? raw[0] : raw).split(",")[0].trim() || "unknown";
+}
+
+function checkRateLimit(id, nowMs = Date.now()) {
+  let visitor = visitors.get(id);
+  if (!visitor || nowMs - visitor.dayStart >= DAY_MS) visitor = { dayStart: nowMs, dayCount: 0, recent: [] };
+  visitor.recent = visitor.recent.filter((t) => nowMs - t < 60000);
+  visitors.set(id, visitor);
+
+  if (visitor.dayCount >= RATE_LIMIT.perDay) {
+    return { allowed: false, scope: "day", retryAfterSec: Math.ceil((visitor.dayStart + DAY_MS - nowMs) / 1000) };
+  }
+  if (visitor.recent.length >= RATE_LIMIT.perMinute) {
+    return { allowed: false, scope: "minute", retryAfterSec: Math.max(1, Math.ceil((visitor.recent[0] + 60000 - nowMs) / 1000)) };
+  }
+  visitor.recent.push(nowMs);
+  visitor.dayCount++;
+
+  if (visitors.size > 5000) {
+    for (const [key, value] of visitors) {
+      if (nowMs - value.dayStart >= DAY_MS || visitors.size > 4000) visitors.delete(key);
+      if (visitors.size <= 4000) break;
+    }
+  }
+  return { allowed: true };
 }
 
 // The reservation state the browser saved with the last assistant message.
@@ -603,19 +634,31 @@ function classifyHttpError(httpStatus, errorBody) {
   return "other";
 }
 
-// One request to one model. Always resolves with a result object.
-async function callGemini(model, systemInstruction, contents, { useThinking, structuredMode, timeoutMs }) {
+// One request to one model, read as a stream so we can tell "has not started
+// answering" (stalled) apart from "is answering, slowly". Always resolves with a
+// result object.
+async function callGemini(model, systemInstruction, contents, { useThinking, structuredMode, firstByteTimeoutMs, hardLimitMs }) {
   const started = Date.now();
-  const generationConfig = { maxOutputTokens: MAX_OUTPUT_TOKENS };
+  const generationConfig = { maxOutputTokens: model.maxOutputTokens };
   if (useThinking && model.thinkingLevel) {
     generationConfig.thinkingConfig = { thinkingLevel: model.thinkingLevel };
   }
   applyStructuredMode(generationConfig, structuredMode);
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let firstByteMs = null;
+  let abortedBecause = null;
+  const stallTimer = setTimeout(() => {
+    abortedBecause = "stalled";
+    controller.abort();
+  }, firstByteTimeoutMs);
+  const hardTimer = setTimeout(() => {
+    abortedBecause = abortedBecause ?? "too_slow";
+    controller.abort();
+  }, hardLimitMs);
+
   try {
-    const response = await fetch(`${API_BASE}/${model.id}:generateContent`, {
+    const response = await fetch(`${API_BASE}/${model.id}:streamGenerateContent?alt=sse`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -629,41 +672,87 @@ async function callGemini(model, systemInstruction, contents, { useThinking, str
       signal: controller.signal,
     });
 
-    const raw = await response.text();
-    let body = null;
-    try {
-      body = JSON.parse(raw);
-    } catch {
-      body = null;
-    }
-    const ms = Date.now() - started;
-
     if (!response.ok) {
+      const raw = await response.text();
+      let body = null;
+      try {
+        body = JSON.parse(raw);
+        if (Array.isArray(body)) body = body[0];
+      } catch {
+        body = null;
+      }
       return {
         kind: classifyHttpError(response.status, body),
         httpStatus: response.status,
         geminiStatus: body?.error?.status ?? null,
         geminiMessage: redact(body?.error?.message ?? raw),
         retryDelayMs: parseRetryDelayMs(response, body),
-        ms,
+        ms: Date.now() - started,
       };
     }
 
-    const blockReason = body?.promptFeedback?.blockReason;
-    const candidate = body?.candidates?.[0];
-    const finishReason = candidate?.finishReason ?? null;
-    const text = (candidate?.content?.parts ?? [])
-      .filter((part) => typeof part.text === "string" && !part.thought)
-      .map((part) => part.text)
-      .join("")
-      .trim();
+    // Read the stream. The stall timer stops at the first piece of the answer.
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let raw = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (firstByteMs === null && value?.length) {
+        firstByteMs = Date.now() - started;
+        clearTimeout(stallTimer);
+      }
+      raw += decoder.decode(value, { stream: true });
+    }
+    raw += decoder.decode();
+    const ms = Date.now() - started;
 
+    let text = "";
+    let finishReason = null;
+    let usage = null;
+    let blockReason = null;
+    let streamError = null;
+    for (const block of raw.split(/\r?\n\r?\n/)) {
+      const data = block
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n");
+      if (!data) continue;
+      let event;
+      try {
+        event = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      if (event.error) streamError = event.error;
+      blockReason = blockReason ?? event.promptFeedback?.blockReason ?? null;
+      const candidate = event.candidates?.[0];
+      for (const part of candidate?.content?.parts ?? []) {
+        if (typeof part.text === "string" && !part.thought) text += part.text;
+      }
+      if (candidate?.finishReason) finishReason = candidate.finishReason;
+      if (event.usageMetadata) usage = event.usageMetadata;
+    }
+    text = text.trim();
+
+    if (streamError) {
+      const httpStatus = Number(streamError.code) || 500;
+      return {
+        kind: classifyHttpError(httpStatus, { error: streamError }),
+        httpStatus,
+        geminiStatus: streamError.status ?? null,
+        geminiMessage: redact(streamError.message),
+        retryDelayMs: null,
+        ms,
+      };
+    }
     if (text) {
       const output = parseModelJson(text);
       if (!output || typeof output.reply !== "string") {
-        return { kind: "bad_output", httpStatus: 200, geminiStatus: finishReason ?? "UNPARSEABLE", geminiMessage: "Model output was not the expected JSON", ms };
+        return { kind: "bad_output", httpStatus: 200, geminiStatus: finishReason ?? "UNPARSEABLE", geminiMessage: "Model output was not the expected JSON", finishReason, usage, firstByteMs, ms };
       }
-      return { kind: "ok", httpStatus: 200, output, finishReason, usage: body?.usageMetadata ?? null, ms };
+      return { kind: "ok", httpStatus: 200, output, finishReason, usage, firstByteMs, ms };
     }
     if (blockReason || ["SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION"].includes(finishReason)) {
       return { kind: "blocked", httpStatus: 200, geminiStatus: blockReason ?? finishReason, geminiMessage: "Response blocked by Gemini", ms };
@@ -671,14 +760,30 @@ async function callGemini(model, systemInstruction, contents, { useThinking, str
     return { kind: "empty", httpStatus: 200, geminiStatus: finishReason ?? "NO_TEXT", geminiMessage: "Gemini returned no text", ms };
   } catch (err) {
     const ms = Date.now() - started;
-    if (err?.name === "AbortError") {
-      return { kind: "timeout", httpStatus: null, geminiStatus: "CLIENT_TIMEOUT", geminiMessage: `No response within ${timeoutMs}ms`, ms };
+    if (err?.name === "AbortError" || abortedBecause) {
+      const stalled = abortedBecause !== "too_slow";
+      return {
+        kind: "timeout",
+        httpStatus: null,
+        geminiStatus: stalled ? "STALLED" : "TOO_SLOW",
+        geminiMessage: stalled ? `Nothing received within ${firstByteTimeoutMs}ms` : `Answer started after ${firstByteMs}ms but was not finished within ${hardLimitMs}ms`,
+        firstByteMs,
+        ms,
+      };
     }
     return { kind: "network", httpStatus: null, geminiStatus: "NETWORK_ERROR", geminiMessage: redact(err?.message), ms };
   } finally {
-    clearTimeout(timer);
+    clearTimeout(stallTimer);
+    clearTimeout(hardTimer);
   }
 }
+
+const usageSummary = (usage) => ({
+  promptTokens: usage?.promptTokenCount ?? null,
+  cachedTokens: usage?.cachedContentTokenCount ?? 0,
+  outputTokens: usage?.candidatesTokenCount ?? null,
+  thoughtTokens: usage?.thoughtsTokenCount ?? 0,
+});
 
 // Primary with retry/backoff, then fallback. `accept` turns the model's JSON
 // into a final answer, or rejects it so the attempt is retried.
@@ -686,7 +791,7 @@ async function generateReply(systemInstruction, contents, requestId, accept, mod
   const started = Date.now();
   const trail = [];
   let totalAttempts = 0;
-  let correction = ""; // added to the instruction after an answer in the wrong language
+  let correction = ""; // added to the instruction after an answer that failed a check
   let usable = null; // an answer that failed a quality check but is better than an error
 
   for (let modelIndex = 0; modelIndex < modelList.length; modelIndex++) {
@@ -710,17 +815,20 @@ async function generateReply(systemInstruction, contents, requestId, accept, mod
       let result = await callGemini(model, systemInstruction + correction, contents, {
         useThinking,
         structuredMode,
-        timeoutMs: Math.min(ATTEMPT_TIMEOUT_MS, remaining - 500),
+        firstByteTimeoutMs: Math.min(FIRST_BYTE_TIMEOUT_MS, remaining - 500),
+        hardLimitMs: Math.min(ATTEMPT_HARD_LIMIT_MS, remaining - 500),
       });
 
       let turn = null;
       if (result.kind === "ok") {
         turn = accept(result.output);
         if (!turn.ok) {
-          if (turn.usable) usable = { turn: turn.usable, model: model.id, usedFallback: modelIndex > 0, structuredMode };
+          if (turn.usable) usable = { turn: turn.usable, model: model.id, usedFallback: modelIndex > 0, structuredMode, usage: usageSummary(result.usage), firstByteMs: result.firstByteMs, modelMs: result.ms };
           if (turn.retryHint) correction = "\n\n---\n\nCORRECTION FOR THIS ATTEMPT: " + turn.retryHint;
           result = { ...result, kind: "bad_output", geminiStatus: turn.retryHint ? "WRONG_LANGUAGE" : "REJECTED", geminiMessage: turn.retryHint ? "Reply failed the language check" : "Model output failed validation" };
         }
+      } else if (result.kind === "bad_output" && result.finishReason === "MAX_TOKENS") {
+        correction = "\n\n---\n\nCORRECTION FOR THIS ATTEMPT: your previous reply was too long and was cut off. Answer in at most 4 short lines.";
       }
 
       const entry = {
@@ -732,11 +840,13 @@ async function generateReply(systemInstruction, contents, requestId, accept, mod
         geminiStatus: result.geminiStatus ?? null,
         geminiMessage: result.geminiMessage ?? null,
         structuredMode,
+        firstByteMs: result.firstByteMs ?? null,
         ms: result.ms,
       };
       trail.push(entry);
 
       if (result.kind === "ok") {
+        const usage = usageSummary(result.usage);
         log("info", "gemini_ok", {
           requestId,
           model: model.id,
@@ -745,12 +855,11 @@ async function generateReply(systemInstruction, contents, requestId, accept, mod
           totalAttempts,
           structuredMode,
           ms: Date.now() - started,
+          firstByteMs: result.firstByteMs,
           finishReason: result.finishReason,
-          promptTokens: result.usage?.promptTokenCount ?? null,
-          outputTokens: result.usage?.candidatesTokenCount ?? null,
-          thoughtTokens: result.usage?.thoughtsTokenCount ?? null,
+          ...usage,
         });
-        return { ok: true, turn, model: model.id, usedFallback: modelIndex > 0, structuredMode, trail, totalAttempts, ms: Date.now() - started };
+        return { ok: true, turn, model: model.id, usedFallback: modelIndex > 0, structuredMode, usage, firstByteMs: result.firstByteMs, modelMs: result.ms, trail, totalAttempts, ms: Date.now() - started };
       }
 
       log("warn", "gemini_attempt_failed", { requestId, ...entry, retryDelayMs: result.retryDelayMs ?? null });
@@ -801,6 +910,7 @@ async function generateReply(systemInstruction, contents, requestId, accept, mod
 const PUBLIC_MESSAGES = {
   INVALID_REQUEST: "The request was not valid.",
   METHOD_NOT_ALLOWED: "Method not allowed.",
+  RATE_LIMITED: "Too many messages. Please wait a moment.",
   AI_NOT_CONFIGURED: "The assistant is not configured.",
   AI_AUTH_FAILED: "The assistant could not authenticate with the AI provider.",
   AI_BUSY: "The assistant is temporarily unavailable. Please try again in a moment.",
@@ -819,75 +929,18 @@ function sendError(res, httpStatus, code, { requestId, retryable = false, reason
   return res.status(httpStatus).json({ ok: false, error, requestId });
 }
 
-// GET /api/chat          → do the configured models exist for this key? (metadata only)
-// GET /api/chat?probe=1  → one tiny real generation per model, no retries
-async function handleHealth(req, res, requestId) {
+// GET /api/chat → what is configured. It calls nothing and spends nothing.
+function handleStatus(res, requestId) {
   const keyConfigured = Boolean(process.env.GEMINI_API_KEY);
-  const knowledge = { menuItems: FACTS.menu.items, sharingPlatters: FACTS.menu.sharingPlatters, menuFingerprint: FACTS.menu.fingerprint };
-  if (!keyConfigured) {
-    return res.status(200).json({ ok: false, keyConfigured, models: [], knowledge, requestId });
-  }
-  const probe = req.query?.probe === "1";
-  const now = casablancaNow();
-
-  const models = await Promise.all(
-    MODELS.map(async (model, index) => {
-      const info = { id: model.id, role: index === 0 ? "primary" : "fallback", thinkingLevel: model.thinkingLevel };
-      try {
-        const response = await fetch(`${API_BASE}/${model.id}`, {
-          headers: { "x-goog-api-key": process.env.GEMINI_API_KEY },
-          signal: AbortSignal.timeout(6000),
-        });
-        const body = await response.json().catch(() => null);
-        info.exists = response.ok;
-        info.httpStatus = response.status;
-        if (response.ok) {
-          info.displayName = body?.displayName ?? null;
-          info.supportsGenerateContent = (body?.supportedGenerationMethods ?? []).includes("generateContent");
-        } else {
-          info.status = body?.error?.status ?? null;
-          info.message = redact(body?.error?.message);
-        }
-      } catch (err) {
-        info.exists = null;
-        info.status = err?.name === "TimeoutError" ? "CLIENT_TIMEOUT" : "NETWORK_ERROR";
-      }
-
-      if (probe) {
-        // Diagnostics: ?t=<ms> sets the timeout (max 25s); ?plain=1 sends a tiny
-        // prompt with no JSON schema; ?think=0 leaves the thinking setting out.
-        const plain = req.query?.plain === "1";
-        const timeoutMs = Math.min(Math.max(Number(req.query?.t) || ATTEMPT_TIMEOUT_MS, 2000), 25000);
-        const structuredMode = plain ? "promptOnly" : STRUCTURED_MODES[structuredModeFor.get(model.id) ?? 0];
-        const system = plain
-          ? 'Reply with this JSON only: {"language":"fr","reply":"Bonjour","reservation":{"stage":"none"}}'
-          : buildSystemInstruction(now, null);
-        const result = await callGemini(model, system, [{ role: "user", parts: [{ text: "Bonjour" }] }], {
-          useThinking: req.query?.think !== "0",
-          structuredMode,
-          timeoutMs,
-        });
-        info.probe = {
-          ok: result.kind === "ok",
-          kind: result.kind,
-          httpStatus: result.httpStatus,
-          status: result.geminiStatus ?? null,
-          message: result.kind === "ok" ? null : result.geminiMessage ?? null,
-          structuredMode,
-          plain,
-          timeoutMs,
-          outputTokens: result.usage?.candidatesTokenCount ?? null,
-          promptTokens: result.usage?.promptTokenCount ?? null,
-          ms: result.ms,
-        };
-      }
-      return info;
-    })
-  );
-
-  const ok = models.every((m) => m.exists && m.supportsGenerateContent && (!probe || m.probe.ok));
-  log("info", "health_check", { requestId, probe, ok, models: models.map((m) => ({ id: m.id, exists: m.exists, httpStatus: m.httpStatus, probe: m.probe?.kind ?? null, structuredMode: m.probe?.structuredMode ?? null })) });
-  return res.status(200).json({ ok, keyConfigured, today: now, models, knowledge, requestId });
+  return res.status(200).json({
+    ok: keyConfigured,
+    keyConfigured,
+    today: casablancaNow(),
+    models: MODELS.map((model, index) => ({ id: model.id, role: index === 0 ? "primary" : "fallback", thinkingLevel: model.thinkingLevel, maxOutputTokens: model.maxOutputTokens })),
+    limits: { historyMessages: MAX_HISTORY_MESSAGES, messageChars: MAX_MESSAGE_CHARS, firstByteTimeoutMs: FIRST_BYTE_TIMEOUT_MS, ratePerMinute: RATE_LIMIT.perMinute, ratePerDay: RATE_LIMIT.perDay },
+    knowledge: { menuItems: FACTS.menu.items, sharingPlatters: FACTS.menu.sharingPlatters, menuFingerprint: FACTS.menu.fingerprint },
+    requestId,
+  });
 }
 
 export default async function handler(req, res) {
@@ -895,7 +948,7 @@ export default async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
 
   try {
-    if (req.method === "GET") return await handleHealth(req, res, requestId);
+    if (req.method === "GET") return handleStatus(res, requestId);
     if (req.method !== "POST") {
       res.setHeader("Allow", "GET, POST");
       return sendError(res, 405, "METHOD_NOT_ALLOWED", { requestId });
@@ -921,11 +974,17 @@ export default async function handler(req, res) {
       return sendError(res, 400, "INVALID_REQUEST", { requestId, reason: "no_user_message" });
     }
 
+    const limit = checkRateLimit(visitorId(req));
+    if (!limit.allowed) {
+      log("warn", "rate_limited", { requestId, scope: limit.scope, retryAfterSec: limit.retryAfterSec });
+      return sendError(res, 429, "RATE_LIMITED", { requestId, retryable: true, reason: `per_${limit.scope}`, retryAfterSec: limit.retryAfterSec });
+    }
+
     const now = casablancaNow();
     const prev = previousReservation(messages, now);
-    const systemInstruction = buildSystemInstruction(now, prev);
-
     const guestText = contents[contents.length - 1].parts[0].text;
+    const systemInstruction = buildSystemInstruction(now, prev, guestText);
+
     const result = await generateReply(systemInstruction, contents, requestId, (output) => resolveTurn(output, prev, now, guestText));
 
     if (result.ok) {
@@ -939,6 +998,7 @@ export default async function handler(req, res) {
         serverOverride: turn.override,
         missing: turn.missing,
         handoff: Boolean(turn.handoff),
+        historyTurns: contents.length,
       });
       return res.status(200).json({
         ok: true,
@@ -951,6 +1011,8 @@ export default async function handler(req, res) {
           usedFallback: result.usedFallback,
           attempts: result.totalAttempts,
           ms: result.ms,
+          firstByteMs: result.firstByteMs ?? null,
+          usage: result.usage ?? null,
         },
         requestId,
       });
@@ -978,4 +1040,4 @@ export default async function handler(req, res) {
 }
 
 // Exported for local tests only.
-export const __test = { detectLanguage, resolveTurn, normalizeReservation, buildDateContext, buildSystemInstruction, casablancaNow, toGeminiContents, previousReservation, parseModelJson, summaryText, whatsappHandoff, addDays };
+export const __test = { checkRateLimit, visitors, RATE_LIMIT, detectLanguage, resolveTurn, normalizeReservation, buildDateContext, buildSystemInstruction, casablancaNow, toGeminiContents, previousReservation, parseModelJson, summaryText, whatsappHandoff, addDays };

@@ -120,7 +120,7 @@ check("A20 correction at confirmation → acknowledgement kept, only one confirm
 
 // Date context
 const ctx = T.buildDateContext(now);
-check("A17 date context: today, tomorrow and Friday resolved", /NOW in Casablanca: Monday,? 5 October 2026, 21:10/.test(ctx) && ctx.includes("2026-10-05 Monday = TODAY") && ctx.includes("2026-10-06 Tuesday = TOMORROW") && ctx.includes("2026-10-09 Friday") && ctx.includes("2026-10-19 Monday"));
+check("A17 date context: today, tomorrow and Friday resolved, two weeks ahead", ctx.includes("NOW in Casablanca: Monday 2026-10-05, 21:10") && ctx.includes("2026-10-05 Mon = today") && ctx.includes("2026-10-06 Tue = tomorrow") && ctx.includes("2026-10-09 Fri") && ctx.includes("2026-10-18 Sun") && !ctx.includes("2026-10-19"));
 const live = T.casablancaNow();
 check("A17 live Casablanca clock is well formed", /^\d{4}-\d{2}-\d{2}$/.test(live.date) && /^\d{2}:\d{2}$/.test(live.time), `${live.date} ${live.time}`);
 check("A17 month/year rollover", T.addDays("2026-12-31", 1) === "2027-01-01" && T.addDays("2028-02-28", 1) === "2028-02-29");
@@ -129,23 +129,56 @@ check("A17 month/year rollover", T.addDays("2026-12-31", 1) === "2027-01-01" && 
 let calls, logs = [];
 for (const level of ["log", "warn", "error"]) console[level] = (...a) => logs.push(a.join(" "));
 
-const gem = (obj) => ({ status: 200, body: { candidates: [{ content: { parts: [{ text: typeof obj === "string" ? obj : JSON.stringify(obj) }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 4000, candidatesTokenCount: 40 } } });
-const err = (code, status, message) => ({ status: code, body: { error: { code, status, message } } });
+// A streamed Gemini answer: the text arrives in two pieces, usage in the last one.
+const sse = (events) => events.map((e) => "data: " + JSON.stringify(e) + "\n\n").join("");
+function gemEvents(obj, { finishReason = "STOP", usage = { promptTokenCount: 3400, candidatesTokenCount: 40, cachedContentTokenCount: 0 } } = {}) {
+  const text = typeof obj === "string" ? obj : JSON.stringify(obj);
+  const half = Math.ceil(text.length / 2);
+  return [
+    { candidates: [{ content: { parts: [{ text: text.slice(0, half) }] } }] },
+    { candidates: [{ content: { parts: [{ text: text.slice(half) }] }, finishReason }], usageMetadata: usage },
+  ];
+}
+const gem = (obj, options) => ({ status: 200, text: sse(gemEvents(obj, options)) });
+const err = (code, status, message) => ({ status: code, text: JSON.stringify({ error: { code, status, message } }) });
+// Never answers until aborted (a stalled model).
+const hang = { hang: true };
+// Sends the first piece quickly, the rest after `gapMs` (a slow but real answer).
+const slow = (obj, gapMs) => ({ slow: gemEvents(obj), gapMs });
+
 function install(script) {
   calls = [];
   const q = { [LITE]: [...(script[LITE] ?? [])], [FLASH]: [...(script[FLASH] ?? [])] };
   globalThis.fetch = async (url, init = {}) => {
     const model = /models\/([^:?]+)/.exec(url)[1];
     const sent = JSON.parse(init.body);
-    calls.push({ model, url, headers: init.headers, system: sent.system_instruction.parts[0].text, contents: sent.contents, gc: sent.generationConfig });
+    calls.push({ model, url, t: Date.now(), headers: init.headers, system: sent.system_instruction.parts[0].text, contents: sent.contents, gc: sent.generationConfig });
     const next = q[model].shift();
     if (!next) throw new Error("unexpected call to " + model);
-    return new Response(JSON.stringify(next.body), { status: next.status });
+    const abortError = () => Object.assign(new Error("aborted"), { name: "AbortError" });
+    if (next.hang) return new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(abortError())));
+    if (next.slow) {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        async start(controller) {
+          init.signal.addEventListener("abort", () => controller.error(abortError()));
+          controller.enqueue(encoder.encode(sse([next.slow[0]])));
+          await new Promise((r) => setTimeout(r, next.gapMs));
+          if (init.signal.aborted) return;
+          controller.enqueue(encoder.encode(sse([next.slow[1]])));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }
+    return new Response(next.text, { status: next.status });
   };
 }
-async function post(messages) {
+let visitorCounter = 0;
+async function post(messages, ip) {
   const res = { statusCode: 200, headers: {}, body: null, setHeader(k, v) { this.headers[k] = v; }, status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
-  await handler({ method: "POST", body: { messages }, query: {} }, res);
+  // Each call is a different visitor unless a test passes its own address.
+  await handler({ method: "POST", body: { messages }, query: {}, headers: { "x-real-ip": ip ?? `10.0.0.${++visitorCounter}` } }, res);
   return res;
 }
 const none = { stage: "none", guests: null, date: null, time: null, name: null, phone: null, note: null };
@@ -156,15 +189,20 @@ let c = calls[0];
 check("B1 primary is Flash-Lite with minimal thinking", c.model === LITE && c.gc.thinkingConfig.thinkingLevel === "minimal");
 check("B1 key in header only", c.headers["x-goog-api-key"] === FAKE_KEY && !c.url.includes("key="));
 check("B1 JSON schema requested", c.gc.responseMimeType === "application/json" && c.gc.responseJsonSchema.required.includes("reservation"));
-check("B1 system prompt carries today's date, the calendar and the generated knowledge", /NOW in Casablanca: \w+,? \d+ \w+ 20\d\d, \d\d:\d\d/.test(c.system) && c.system.includes("= TOMORROW") && c.system.includes("Paella Negra — Paella noire aux fruits de mer — 320 dhs") && c.system.includes("H9Q6+F2Q") && c.system.includes("no reservation in progress"));
-check("B1 unchanging text first, date and state last", c.system.indexOf("### Boissons") < c.system.indexOf("NOW in Casablanca") && c.system.indexOf("NOW in Casablanca") < c.system.indexOf("RESERVATION STATE BEFORE THIS MESSAGE"));
+check("B1 request goes to the streaming endpoint", c.url.endsWith("/gemini-3.5-flash-lite:streamGenerateContent?alt=sse"));
+check("B1 output capped at 500 tokens on Flash-Lite", c.gc.maxOutputTokens === 500);
+check("B1 system prompt carries today's date, the calendar and the generated knowledge", /NOW in Casablanca: \w+ 20\d\d-\d\d-\d\d, \d\d:\d\d/.test(c.system) && c.system.includes("= tomorrow") && c.system.includes("Paella Negra — Paella noire aux fruits de mer — 320") && c.system.includes("H9Q6+F2Q") && c.system.includes("no reservation in progress"));
+check("B1 every menu line is in the request", (c.system.match(/^.+ — .+$/gm) || []).filter((l) => /— \d[\d ]*( dhs)?( \/ .+| \(.+\))?$|\d dhs$/.test(l)).length >= 71, String((c.system.match(/^.+ — .+$/gm) || []).length) + " dish lines");
+check("B1 unchanging text first, date and state last", c.system.indexOf("[Boissons") < c.system.indexOf("NOW in Casablanca") && c.system.indexOf("NOW in Casablanca") < c.system.indexOf("RESERVATION STATE BEFORE THIS MESSAGE"));
+check("B1 reviews are not sent for an ordinary message", !c.system.includes("CUSTOMER REVIEWS"));
 check("B1 old invented dishes are gone from the prompt", !/Croquetas de Jam|Churros|Tortilla Espa|Entrecôte|Paella Valenciana|Crème Catalane/.test(c.system));
 check("B1 response shape", res.statusCode === 200 && res.body.message === "Hello! How can I help?" && res.body.language === "en" && res.body.reservation.stage === "none" && res.body.handoff === null && res.body.meta.model === LITE);
+check("B1 token usage reported with the answer (prompt, cached, output)", res.body.meta.usage.promptTokens === 3400 && res.body.meta.usage.cachedTokens === 0 && res.body.meta.usage.outputTokens === 40 && typeof res.body.meta.firstByteMs === "number");
 
 // Fallback order
 install({ [LITE]: [err(503, "UNAVAILABLE", "busy"), err(503, "UNAVAILABLE", "busy"), err(503, "UNAVAILABLE", "busy")], [FLASH]: [gem({ language: "fr", reply: "Bonjour !", reservation: none })] });
 res = await post([{ role: "user", content: "Bonjour" }]);
-check("B2 Lite overloaded → 3.8 Flash answers with thinking=low", res.body.meta.model === FLASH && res.body.meta.usedFallback && calls[3].gc.thinkingConfig.thinkingLevel === "low", calls.map((x) => (x.model === LITE ? "L" : "F")).join(""));
+check("B2 Lite overloaded → 3.8 Flash answers with thinking=low", res.body.meta.model === FLASH && res.body.meta.usedFallback && calls[3].gc.thinkingConfig.thinkingLevel === "low" && calls[3].gc.maxOutputTokens === 700, calls.map((x) => (x.model === LITE ? "L" : "F")).join(""));
 
 // Unparseable output is retried, never shown to the guest
 install({ [LITE]: [gem("Sure! Here you go: not json"), gem({ language: "en", reply: "Hi", reservation: none })] });
@@ -205,6 +243,78 @@ const wrong = gem({ language: "en", reply: "Nous sommes ouverts de 12h00 à minu
 install({ [LITE]: [wrong, wrong, wrong], [FLASH]: [wrong, wrong] });
 res = await post([{ role: "user", content: "What are your opening hours please?" }]);
 check("B7 every attempt in the wrong language → guest still gets an answer, not an error", res.statusCode === 200 && res.body.message.startsWith("Nous sommes ouverts") && calls.length === 5);
+
+// Wrong-language retries stay on Flash-Lite
+install({ [LITE]: [gem({ language: "en", reply: "Nous sommes ouverts de 12h00 à minuit, tous les jours. Souhaitez-vous réserver ?", reservation: none }), gem({ language: "en", reply: "We're open every day from 12:00 to midnight.", reservation: none })] });
+res = await post([{ role: "user", content: "What are your opening hours please?" }]);
+check("B7 wrong-language retry uses Flash-Lite again", calls.length === 2 && calls.every((x) => x.model === LITE) && res.body.meta.model === LITE && !res.body.meta.usedFallback);
+
+// Stall detection without duplicating a slow answer
+install({ [LITE]: [hang], [FLASH]: [gem({ language: "en", reply: "From the fallback", reservation: none })] });
+let t0 = Date.now();
+res = await post([{ role: "user", content: "hello" }]);
+let elapsed = Date.now() - t0;
+check("B8 Flash-Lite sends nothing for 6s → treated as stalled → fallback answers", res.statusCode === 200 && res.body.meta.model === FLASH && calls.length === 2 && elapsed >= 5900 && elapsed < 7500, `${elapsed}ms`);
+install({ [LITE]: [slow({ language: "en", reply: "Slow but real answer", reservation: none }, 7000)], [FLASH]: [gem({ language: "en", reply: "SHOULD NOT BE USED", reservation: none })] });
+t0 = Date.now();
+res = await post([{ role: "user", content: "hello" }]);
+elapsed = Date.now() - t0;
+check("B8 Flash-Lite starts answering, finishes after 7s → kept, fallback never called (no duplicate request)", res.statusCode === 200 && res.body.message === "Slow but real answer" && res.body.meta.model === LITE && calls.length === 1 && elapsed >= 6900, `${elapsed}ms, ${calls.length} request`);
+
+// Too-long answer cut off by the output cap → retried with a request to be shorter
+install({ [LITE]: [gem('{"language":"en","reply":"Here is the whole menu: Salade de Thon, Salade Pepe, Avocat', { finishReason: "MAX_TOKENS" }), gem({ language: "en", reply: "Short version.", reservation: none })] });
+res = await post([{ role: "user", content: "list everything" }]);
+check("B9 answer cut off at the output cap → retried asking for a shorter one", res.body.message === "Short version." && /previous reply was too long/.test(calls[1].system));
+
+// History window and message length
+const longHistory = [];
+for (let i = 0; i < 12; i++) { longHistory.push({ role: "user", content: "question " + i }); longHistory.push({ role: "assistant", content: "answer " + i }); }
+longHistory.push({ role: "user", content: "x".repeat(2000) });
+install({ [LITE]: [gem({ language: "en", reply: "ok", reservation: none })] });
+res = await post(longHistory);
+let sentTurns = calls[0].contents;
+check("B10 only the last 12 messages are sent, starting with a guest message", sentTurns.length === 11 && sentTurns[0].role === "user" && sentTurns[0].parts[0].text === "question 7" && sentTurns.at(-1).role === "user", `${sentTurns.length} turns, first="${sentTurns[0].parts[0].text}"`);
+check("B10 an over-long guest message is cut to 600 characters", sentTurns.at(-1).parts[0].text.length === 600);
+const stateHistory = [{ role: "user", content: "table for 4" }, { role: "assistant", content: "For which date?", reservation: { stage: "collecting", guests: 4, date: null, time: null, name: null, phone: null, note: null } }];
+for (let i = 0; i < 7; i++) { stateHistory.push({ role: "user", content: "side question " + i }); stateHistory.push({ role: "assistant", content: "side answer " + i, reservation: { stage: "collecting", guests: 4, date: null, time: null, name: null, phone: null, note: null } }); }
+stateHistory.push({ role: "user", content: "tomorrow" });
+install({ [LITE]: [gem({ language: "en", reply: "What time?", reservation: { stage: "collecting", guests: null, date: tomorrow, time: null, name: null, phone: null, note: null } })] });
+res = await post(stateHistory);
+check("B10 booking details survive after the first messages drop out of the window", !JSON.stringify(calls[0].contents).includes("table for 4") && calls[0].system.includes("guests=4") && res.body.reservation.guests === 4 && res.body.reservation.date === tomorrow);
+
+// Reviews only when asked
+install({ [LITE]: [gem({ language: "en", reply: "Guests rate us 4.4.", reservation: none })] });
+res = await post([{ role: "user", content: "What do the reviews say about you?" }]);
+check("B11 reviews are added when the guest asks about them", calls[0].system.includes("CUSTOMER REVIEWS") && calls[0].system.includes("Queen Tega") && calls[0].system.indexOf("CUSTOMER REVIEWS") < calls[0].system.indexOf("NOW in Casablanca"));
+
+// Visitor rate limit
+T.visitors.clear();
+let allowed = 0, blocked = null;
+for (let i = 0; i < T.RATE_LIMIT.perMinute + 1; i++) {
+  install({ [LITE]: [gem({ language: "en", reply: "ok", reservation: none })] });
+  res = await post([{ role: "user", content: "hello" }], "203.0.113.7");
+  if (res.statusCode === 200) allowed++; else blocked = { res, geminiCalls: calls.length };
+}
+check(`B12 one visitor: ${T.RATE_LIMIT.perMinute} messages a minute pass, the next is refused without calling Gemini`, allowed === T.RATE_LIMIT.perMinute && blocked?.res.statusCode === 429 && blocked.res.body.error.code === "RATE_LIMITED" && blocked.res.body.error.reason === "per_minute" && Number(blocked.res.headers["Retry-After"]) >= 1 && blocked.geminiCalls === 0);
+install({ [LITE]: [gem({ language: "en", reply: "ok", reservation: none })] });
+res = await post([{ role: "user", content: "hello" }], "203.0.113.8");
+check("B12 another visitor is not affected", res.statusCode === 200);
+const day = T.checkRateLimit;
+T.visitors.clear();
+let dayAllowed = 0;
+for (let i = 0; i < T.RATE_LIMIT.perDay + 5; i++) if (day("198.51.100.1", 1_000_000 + i * 61_000).allowed) dayAllowed++;
+check(`B12 daily ceiling: ${T.RATE_LIMIT.perDay} messages per visitor per day`, dayAllowed === T.RATE_LIMIT.perDay && day("198.51.100.1", 1_000_000 + 400 * 61_000).scope === "day");
+check("B12 the daily count resets after 24 hours", day("198.51.100.1", 1_000_000 + 86_400_000 + 1).allowed === true);
+
+// Status endpoint: no model calls, and the old ?probe=1 diagnostic is gone
+let outbound = 0;
+globalThis.fetch = async () => { outbound++; throw new Error("no outbound call expected"); };
+for (const query of [{}, { probe: "1" }, { probe: "1", plain: "1", t: "25000" }]) {
+  const sres = { statusCode: 200, headers: {}, body: null, setHeader(k, v) { this.headers[k] = v; }, status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
+  await handler({ method: "GET", query, headers: {} }, sres);
+  res = sres;
+}
+check("B13 GET status and ?probe=1 make no call to Gemini and spend nothing", outbound === 0 && res.statusCode === 200 && res.body.models[0].id === LITE && res.body.models[1].id === FLASH && !JSON.stringify(res.body).includes("probe") && res.body.knowledge.menuItems === 62);
 
 // Privacy of logs
 const all = logs.join("\n");
