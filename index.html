@@ -2390,32 +2390,51 @@ async function cpSend() {
   document.getElementById('cp-send').disabled = true;
   cpShowTyping();
 
-  var attempts = 0;
-  var success = false;
-  while (attempts < 2 && !success) {
-    try {
-      var response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: cpMessages })
-      });
-      var data = await response.json();
+  // One request. The server already retries Gemini with backoff and falls back
+  // to a second model, so the browser does not retry on its own.
+  var failText = null;
+  var controller = new AbortController();
+  var timer = setTimeout(function() { controller.abort(); }, 28000);
+  try {
+    var response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: cpMessages }),
+      signal: controller.signal
+    });
+    var data = null;
+    try { data = await response.json(); } catch (parseErr) { data = null; }
+
+    if (response.ok && data && data.message) {
+      cpMessages.push({ role: 'assistant', content: data.message });
       cpHideTyping();
-      if (data.message) {
-        cpMessages.push({ role: 'assistant', content: data.message });
-        cpAddBot(data.message);
-        success = true;
-      } else {
-        attempts++;
-        if (attempts >= 2) cpAddBot('Désolé, une erreur s\'est produite. Veuillez réessayer ou contacter le restaurant directement au +212 6 19 53 69 33.');
-      }
-    } catch (err) {
-      attempts++;
-      if (attempts >= 2) {
-        cpHideTyping();
-        cpAddBot('Désolé, je ne suis pas disponible en ce moment. Contactez-nous directement au +212 6 19 53 69 33 ou via WhatsApp.');
-      }
+      cpAddBot(data.message);
+    } else {
+      var apiErr = (data && data.error && typeof data.error === 'object') ? data.error : {};
+      // Development diagnostics: error code + request id to match against server logs.
+      console.warn('[concierge] API error', {
+        httpStatus: response.status,
+        code: apiErr.code || null,
+        reason: apiErr.reason || null,
+        upstream: apiErr.upstream || null,
+        requestId: data && data.requestId || null
+      });
+      var temporary = apiErr.retryable === true || response.status === 503 || response.status === 429;
+      failText = temporary
+        ? 'Notre concierge est très sollicité en ce moment. Merci de réessayer dans quelques instants, ou contactez-nous directement au +212 6 19 53 69 33.'
+        : 'Désolé, une erreur s\'est produite. Veuillez réessayer ou contacter le restaurant directement au +212 6 19 53 69 33.';
     }
+  } catch (err) {
+    console.warn('[concierge] request failed', err && err.name);
+    failText = 'Désolé, je ne suis pas disponible en ce moment. Contactez-nous directement au +212 6 19 53 69 33 ou via WhatsApp.';
+  }
+  clearTimeout(timer);
+
+  if (failText) {
+    // The unanswered user message stays in history: the server merges it with
+    // the next one, so the customer does not have to repeat their context.
+    cpHideTyping();
+    cpAddBot(failText);
   }
 
   cpLoading = false;
