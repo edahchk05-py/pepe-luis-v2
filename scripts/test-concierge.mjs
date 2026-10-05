@@ -129,7 +129,7 @@ let res = await post([{ role: "user", content: "hello" }]);
 let c = calls[0];
 check("B1 primary is Flash-Lite with minimal thinking", c.model === LITE && c.gc.thinkingConfig.thinkingLevel === "minimal");
 check("B1 key in header only", c.headers["x-goog-api-key"] === FAKE_KEY && !c.url.includes("key="));
-check("B1 JSON schema requested", c.gc.responseFormat?.text?.mimeType === "application/json" && c.gc.responseFormat.text.schema.required.includes("reservation"));
+check("B1 JSON schema requested", c.gc.responseMimeType === "application/json" && c.gc.responseJsonSchema.required.includes("reservation"));
 check("B1 system prompt carries today's date, the calendar and the generated knowledge", /NOW in Casablanca: \w+,? \d+ \w+ 20\d\d, \d\d:\d\d/.test(c.system) && c.system.includes("= TOMORROW") && c.system.includes("Paella Negra — Paella noire aux fruits de mer — 320 dhs") && c.system.includes("H9Q6+F2Q") && c.system.includes("no reservation in progress"));
 check("B1 old invented dishes are gone from the prompt", !/Croquetas de Jam|Churros|Tortilla Espa|Entrecôte|Paella Valenciana|Crème Catalane/.test(c.system));
 check("B1 response shape", res.statusCode === 200 && res.body.message === "Hello! How can I help?" && res.body.language === "en" && res.body.reservation.stage === "none" && res.body.handoff === null && res.body.meta.model === LITE);
@@ -163,12 +163,12 @@ check("B4 the model was told the summary had been shown", calls[0].system.includ
 check("B4 handoff payload does not leak the raw message field", !("message" in res.body.handoff));
 
 // Structured-output format ladder
-install({ [LITE]: [err(400, "INVALID_ARGUMENT", 'Invalid JSON payload received. Unknown name "responseFormat" at \'generation_config\': Cannot find field.'), gem({ language: "en", reply: "Hi", reservation: none })] });
+install({ [LITE]: [err(400, "INVALID_ARGUMENT", 'Invalid JSON payload received. Unknown name "responseJsonSchema" at \'generation_config\': Cannot find field.'), gem({ language: "en", reply: "Hi", reservation: none })] });
 res = await post([{ role: "user", content: "hello" }]);
-check("B5 API rejects the JSON format field → next format used, same request succeeds", res.statusCode === 200 && !calls[1].gc.responseFormat && calls[1].gc.responseMimeType === "application/json" && Boolean(calls[1].gc.responseJsonSchema) && res.body.meta.attempts === 2);
+check("B5 API rejects the JSON format field → next format used, same request succeeds", res.statusCode === 200 && !calls[1].gc.responseJsonSchema && calls[1].gc.responseFormat?.text?.mimeType === "application/json" && res.body.meta.attempts === 2);
 install({ [LITE]: [gem({ language: "en", reply: "Hi again", reservation: none })] });
 res = await post([{ role: "user", content: "hello" }]);
-check("B5 working format remembered for the next request", calls.length === 1 && Boolean(calls[0].gc.responseJsonSchema));
+check("B5 working format remembered for the next request", calls.length === 1 && Boolean(calls[0].gc.responseFormat));
 
 // Privacy of logs
 const all = logs.join("\n");

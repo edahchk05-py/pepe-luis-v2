@@ -56,10 +56,12 @@ const RESPONSE_SCHEMA = {
   required: ["language", "reply", "reservation"],
 };
 
-// Ways of asking Gemini for JSON, strictest first. If the API rejects one, the
-// next is used and remembered for the life of this server instance. The prompt
-// also describes the format, so even the last mode produces parseable output.
-const STRUCTURED_MODES = ["responseFormat", "responseJsonSchema", "jsonMimeOnly", "promptOnly"];
+// Ways of asking Gemini for JSON. The first is the one the live generateContent
+// API accepted when probed on 2026-10-05 ("responseFormat" was rejected). If the
+// API ever rejects the current one, the next is used and remembered for the life
+// of this server instance. The prompt also describes the format, so even the
+// last mode produces parseable output.
+const STRUCTURED_MODES = ["responseJsonSchema", "responseFormat", "jsonMimeOnly", "promptOnly"];
 const structuredModeFor = new Map(); // model id → index into STRUCTURED_MODES
 
 function applyStructuredMode(generationConfig, mode) {
