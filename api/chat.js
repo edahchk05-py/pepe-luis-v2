@@ -103,6 +103,8 @@ KNOWLEDGE RULES
 - Customer reviews in the knowledge are guests' opinions. You may mention them as reviews, never as promises.
 - Unrelated but harmless questions (a sum, a joke, small talk): answer in one short friendly sentence, then bring it back to Pepe Luis. Do not write long off-topic answers.
 - You cannot see table availability. You never confirm a booking yourself.
+- You cannot take food, delivery or click & collect orders. If asked, say which services exist and give the phone number to order.
+- Fish, tuna, shellfish and seafood are not vegetarian. This is a seafood restaurant: be honest that most of the menu is fish and seafood. Mention a dish as possibly suitable for a vegetarian only if neither its name nor its description contains meat, fish or seafood, and say it should be confirmed with the restaurant.
 
 RESERVATIONS
 You help the guest prepare a reservation REQUEST. The guest then sends it to the restaurant on WhatsApp, and the restaurant confirms it. You do not confirm it.
@@ -112,12 +114,13 @@ Details needed: guests (number of people), date, time, name, phone. Optional: no
 How to run it:
 - Start as soon as the guest shows any intent to book ("book", "réserver", "une table pour 4", "on vient ce soir", "حجز", "بغيت نحجز", "bghit n7jez"...). Never ask "would you like to book?".
 - Take everything the guest already gave, in any order, in one message or across several. Never ask again for something you already have.
-- Ask only for what is missing, one or two things per message, in a natural order: people, date, time, then name and phone. It must feel like a conversation, not a form.
+- Ask only for what is missing, at most two things per message, in a natural order: people, date, time, then name and phone. Name and phone may be asked together; never ask for the time, the name and the phone all in one message. It must feel like a conversation, not a form.
 - Accept corrections at any moment ("actually make it 5", "plutôt 21h").
-- If the guest asks something else in the middle, answer it, then continue where you left off, keeping every detail.
+- If the guest asks something else in the middle, answer it, then in the same reply ask for the next missing detail, keeping everything already given.
+- You cannot pre-order food or add dishes to a reservation. Never offer to. If the guest asks for something specific (a dish, an occasion, a seating wish), put it in "note".
 - date: write it as YYYY-MM-DD using the CALENDAR given after the knowledge. Never compute dates yourself.
 - time: 24-hour HH:MM. "8pm", "20h", "8 du soir" all mean "20:00". A vague time ("evening", "ce soir", "lunch", "le soir") is not a time: keep time null and ask for the hour.
-- The restaurant is open every day from 12:00 to midnight. Do not accept a time before 12:00, or a date or time that is already past: explain kindly and ask for another.
+- The restaurant is open every day from 12:00 to midnight. Do not accept a time before 12:00, or a date or time that is already past (compare with NOW, given after the knowledge): explain kindly and ask for another.
 - phone: copy the digits as the guest wrote them.
 
 "reservation.stage":
@@ -384,16 +387,49 @@ function looksLikeSummary(reply, r) {
   return Boolean(r.name && r.time) && reply.toLowerCase().includes(r.name.toLowerCase()) && reply.includes(r.time);
 }
 
+// Rough language detection, used only to catch a reply written in the wrong
+// language. Returns "ar", "fr", "en", or null when the text is too short or mixed
+// to be sure. Words shared by French and English ("table", "menu") are left out.
+const FR_WORDS = /(?<![\p{L}'’])(je|j|tu|vous|nous|on|est|sont|êtes|avez|avons|une|des|les|du|au|aux|pour|avec|dans|sur|et|ou|où|que|qui|quoi|quel|quels|quelle|quelles|combien|bonjour|bonsoir|merci|salut|voudrais|souhaite|souhaitez|réserver|réservation|personnes|demain|ce|soir|aujourd|heure|votre|vos|notre|nos|mais|pas|plaît|oui|non|très|bien|ouvert|ouverts|plats|carte)(?![\p{L}])/giu;
+const EN_WORDS = /(?<![\p{L}'’])(i|you|we|they|the|is|are|am|do|does|did|have|has|what|which|where|when|how|much|many|would|could|can|like|please|your|our|my|for|with|and|or|not|this|that|there|it|at|to|of|hello|hi|hey|thanks|thank|book|booking|people|tomorrow|tonight|today|evening|open|opening|hours|located|yes|no|any|some|options|recommend)(?![\p{L}])/giu;
+function detectLanguage(text) {
+  const letters = (text.match(/\p{L}/gu) ?? []).length;
+  if (letters < 2) return null;
+  const arabic = (text.match(/[\u0600-\u06FF\u0750-\u077F]/g) ?? []).length;
+  if (arabic / letters > 0.5) return "ar";
+  if (arabic / letters > 0.1) return null; // mixed scripts: do not guess
+  const fr = (text.match(FR_WORDS) ?? []).length + (text.match(/[éèêàùçôîû]/gi) ?? []).length * 0.5;
+  const en = (text.match(EN_WORDS) ?? []).length;
+  if (fr >= 2 && fr >= en * 2) return "fr";
+  if (en >= 2 && en >= fr * 2) return "en";
+  return null;
+}
+const LANGUAGE_NAMES = { fr: "French", en: "English", ar: "Arabic" };
+
 // Letters from scripts that have no place in a French, English or Arabic reply.
 const FOREIGN_SCRIPT = /[\u0590-\u05FF\u0400-\u04FF\u0900-\u097F\u0E00-\u0E7F\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/;
 
 // Applies the rules the model is not trusted with: complete details before a
 // summary, a summary before a confirmation, and a confirmation before WhatsApp.
-function resolveTurn(modelOutput, prev, now) {
-  const language = LANGUAGES.includes(modelOutput.language) ? modelOutput.language : "fr";
-  const t = textFor(language);
+function resolveTurn(modelOutput, prev, now, guestText = "") {
+  let language = LANGUAGES.includes(modelOutput.language) ? modelOutput.language : "fr";
   const modelReply = typeof modelOutput.reply === "string" ? modelOutput.reply.trim() : "";
-  if (language !== "other" && FOREIGN_SCRIPT.test(modelReply)) return { ok: false }; // garbled output: retry
+
+  // Language checks. A failed check asks for another attempt with a correction;
+  // if every attempt fails the last answer is still used (see generateReply).
+  let retryHint = null;
+  const guestLanguage = detectLanguage(guestText);
+  const replyLanguage = detectLanguage(modelReply);
+  if (guestLanguage && language !== guestLanguage) {
+    retryHint = `The guest's latest message is in ${LANGUAGE_NAMES[guestLanguage]}. Set "language" to "${guestLanguage}" and write "reply" in ${LANGUAGE_NAMES[guestLanguage]}.`;
+    language = guestLanguage; // server-written texts (summary, questions) use the guest's language regardless
+  } else if (replyLanguage && LANGUAGE_NAMES[language] && replyLanguage !== language) {
+    retryHint = `Your "reply" was written in ${LANGUAGE_NAMES[replyLanguage]} but the guest is writing in ${LANGUAGE_NAMES[language]}. Write "reply" in ${LANGUAGE_NAMES[language]}.`;
+  } else if (language !== "other" && FOREIGN_SCRIPT.test(modelReply)) {
+    retryHint = `Your "reply" contained letters from the wrong alphabet. Write it again cleanly in ${LANGUAGE_NAMES[language] ?? "the guest's language"}.`;
+  }
+
+  const t = textFor(language);
   const { reservation, issues } = normalizeReservation(modelOutput.reservation, now);
   const modelStage = reservation.stage;
   let reply = modelReply;
@@ -419,7 +455,15 @@ function resolveTurn(modelOutput, prev, now) {
   const alreadySent = prev?.stage === "confirmed" && sameDetails(prev, reservation) && !missing.length;
   const wantsSummaryOrSend = reservation.stage === "awaiting_confirmation" || reservation.stage === "confirmed";
 
-  if (wantsSummaryOrSend && alreadySent) {
+  const active = reservation.stage === "collecting" || wantsSummaryOrSend;
+
+  if (active && issues.length && !alreadySent) {
+    // The guest gave a time or date that cannot work (closed, already past…):
+    // say so right away instead of quietly dropping it.
+    reservation.stage = "collecting";
+    override = `issue:${issues[0]}`;
+    reply = t.issue[issues[0]];
+  } else if (wantsSummaryOrSend && alreadySent) {
     // This exact request already has its WhatsApp button: do not summarise or send again.
     reservation.stage = "confirmed";
     override = "already_sent";
@@ -448,7 +492,15 @@ function resolveTurn(modelOutput, prev, now) {
   }
 
   if (!alreadySent && reservation.stage === "awaiting_confirmation") {
-    const lead = looksLikeSummary(reply, reservation) ? "" : reply;
+    // Keep what the model said before the summary (an answer, an acknowledgement),
+    // but not its own questions: the summary ends with the one question that matters.
+    const lead = looksLikeSummary(reply, reservation)
+      ? ""
+      : reply
+          .split(/(?<=[.!?؟])\s+/)
+          .filter((sentence) => !/[?؟]\s*$/.test(sentence))
+          .join(" ")
+          .trim();
     reply = summaryText(reservation, language, now, lead);
   }
 
@@ -458,7 +510,11 @@ function resolveTurn(modelOutput, prev, now) {
     else return { ok: false };
   }
 
-  return { ok: true, language, reply, reservation, handoff, modelStage, override, missing };
+  const turn = { ok: true, language, reply, reservation, handoff, modelStage, override, missing };
+  // Server-written replies are already in the right language; only the model's own text can be wrong.
+  const modelTextShown = reply.includes(modelReply) && modelReply.length > 0;
+  if (retryHint && modelTextShown) return { ok: false, retryHint, usable: turn };
+  return turn;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -630,6 +686,8 @@ async function generateReply(systemInstruction, contents, requestId, accept, mod
   const started = Date.now();
   const trail = [];
   let totalAttempts = 0;
+  let correction = ""; // added to the instruction after an answer in the wrong language
+  let usable = null; // an answer that failed a quality check but is better than an error
 
   for (let modelIndex = 0; modelIndex < modelList.length; modelIndex++) {
     const model = modelList[modelIndex];
@@ -641,6 +699,7 @@ async function generateReply(systemInstruction, contents, requestId, accept, mod
       const remaining = TOTAL_BUDGET_MS - (Date.now() - started);
       if (remaining < 1500) {
         log("error", "gemini_budget_exhausted", { requestId, model: model.id, totalAttempts });
+        if (usable) return { ok: true, ...usable, imperfect: true, trail, totalAttempts, ms: Date.now() - started };
         return { ok: false, trail, totalAttempts, ms: Date.now() - started };
       }
 
@@ -648,7 +707,7 @@ async function generateReply(systemInstruction, contents, requestId, accept, mod
       totalAttempts++;
       const modeIndex = structuredModeFor.get(model.id) ?? 0;
       const structuredMode = STRUCTURED_MODES[modeIndex];
-      let result = await callGemini(model, systemInstruction, contents, {
+      let result = await callGemini(model, systemInstruction + correction, contents, {
         useThinking,
         structuredMode,
         timeoutMs: Math.min(ATTEMPT_TIMEOUT_MS, remaining - 500),
@@ -657,7 +716,11 @@ async function generateReply(systemInstruction, contents, requestId, accept, mod
       let turn = null;
       if (result.kind === "ok") {
         turn = accept(result.output);
-        if (!turn.ok) result = { ...result, kind: "bad_output", geminiStatus: "REJECTED", geminiMessage: "Model output failed validation" };
+        if (!turn.ok) {
+          if (turn.usable) usable = { turn: turn.usable, model: model.id, usedFallback: modelIndex > 0, structuredMode };
+          if (turn.retryHint) correction = "\n\n---\n\nCORRECTION FOR THIS ATTEMPT: " + turn.retryHint;
+          result = { ...result, kind: "bad_output", geminiStatus: turn.retryHint ? "WRONG_LANGUAGE" : "REJECTED", geminiMessage: turn.retryHint ? "Reply failed the language check" : "Model output failed validation" };
+        }
       }
 
       const entry = {
@@ -727,6 +790,10 @@ async function generateReply(systemInstruction, contents, requestId, accept, mod
     }
   }
 
+  if (usable) {
+    log("warn", "gemini_used_imperfect_answer", { requestId, model: usable.model, totalAttempts });
+    return { ok: true, ...usable, imperfect: true, trail, totalAttempts, ms: Date.now() - started };
+  }
   return { ok: false, trail, totalAttempts, ms: Date.now() - started };
 }
 
@@ -858,7 +925,8 @@ export default async function handler(req, res) {
     const prev = previousReservation(messages, now);
     const systemInstruction = buildSystemInstruction(now, prev);
 
-    const result = await generateReply(systemInstruction, contents, requestId, (output) => resolveTurn(output, prev, now));
+    const guestText = contents[contents.length - 1].parts[0].text;
+    const result = await generateReply(systemInstruction, contents, requestId, (output) => resolveTurn(output, prev, now, guestText));
 
     if (result.ok) {
       const turn = result.turn;
@@ -910,4 +978,4 @@ export default async function handler(req, res) {
 }
 
 // Exported for local tests only.
-export const __test = { resolveTurn, normalizeReservation, buildDateContext, buildSystemInstruction, casablancaNow, toGeminiContents, previousReservation, parseModelJson, summaryText, whatsappHandoff, addDays };
+export const __test = { detectLanguage, resolveTurn, normalizeReservation, buildDateContext, buildSystemInstruction, casablancaNow, toGeminiContents, previousReservation, parseModelJson, summaryText, whatsappHandoff, addDays };

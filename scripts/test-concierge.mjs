@@ -96,6 +96,28 @@ check("A15 clean Arabic reply with a Latin dish name and emoji → accepted", r.
 r = T.resolveTurn(out("en", "ok", { stage: "collecting", ...full, phone: "12345" }), null, now);
 check("A16 too-short phone number not accepted", r.reservation.phone === null && r.reservation.stage === "collecting");
 
+// Language detection and checks
+const D = T.detectLanguage;
+check("A18 detects English, French, Arabic", D("Table for 3 tomorrow at 10am please") === "en" && D("Quels plats de poisson vous conseillez ?") === "fr" && D("ما هي أوقات العمل عندكم؟") === "ar");
+check("A18 English question naming French dishes is still English", D("How much is the Salade de Fruits de Mer?") === "en" && D("Do you have Loup Grillé à l'Espeto?") === "en");
+check("A18 short or mixed messages are not guessed", D("8pm") === null && D("Edah, 0612345678") === null && D("oui") === null && D("hello") === null && D("Can I réserver pour 4 people tomorrow?") === null);
+r = T.resolveTurn(out("en", "Nous sommes ouverts à partir de 12h00. Souhaitez-vous réserver pour 12h00 ou une autre heure ?", { stage: "collecting", guests: 3, date: "2026-10-06", time: null, name: null, phone: null, note: null }), null, now, "Table for 3 tomorrow at 10am please");
+check("A18 French reply to an English guest → sent back for another attempt, with a correction", r.ok === false && /Write "reply" in English/.test(r.retryHint) && r.usable?.reply.startsWith("Nous sommes"));
+r = T.resolveTurn(out("fr", "Bonjour ! Nous sommes ouverts de 12h à minuit.", { stage: "none" }), null, now, "What are your opening hours?");
+check("A18 model mislabels an English guest as French → correction requested", r.ok === false && /Set "language" to "en"/.test(r.retryHint));
+r = T.resolveTurn(out("fr", "", { stage: "awaiting_confirmation", ...full }), null, now, "Yes that is all correct, please go ahead and book it for me");
+check("A18 server-written summary follows the guest's language even if the model mislabels it", r.ok === true && r.language === "en" && r.reply.startsWith("Perfect. Here's your reservation request:"));
+r = T.resolveTurn(out("en", "We don't have churros, but we do have Tarta de Queso Vasco and Crema Catalana for 50 dhs.", { stage: "none" }), null, now, "Do you have churros?");
+check("A18 correct English reply passes", r.ok === true);
+
+// Invalid time at any stage is explained immediately
+r = T.resolveTurn(out("en", "Could you tell me your name and phone number?", { stage: "collecting", guests: 2, date: "2026-10-05", time: "20:00", name: null, phone: null, note: null }), null, now, "Book a table for 2 tonight at 8pm");
+check("A19 'tonight at 8pm' when it is already 21:10 → told it has passed, not silently dropped", r.reply.startsWith("That time has already passed today") && r.reservation.time === null && r.reservation.guests === 2 && r.reservation.stage === "collecting");
+
+// The model's own questions are removed before the summary
+r = T.resolveTurn(out("fr", "C'est noté, je change pour 7 personnes. Souhaitez-vous envoyer cette modification à Pepe Luis sur WhatsApp ?", { stage: "awaiting_confirmation", ...full, guests: 7 }), { stage: "awaiting_confirmation", ...full }, now, "finalement on sera 7");
+check("A20 correction at confirmation → acknowledgement kept, only one confirmation question", r.reply.startsWith("C'est noté, je change pour 7 personnes.\n\nVoici votre demande de réservation :") && (r.reply.match(/\?/g) || []).length === 1 && r.reply.includes("• 7 personnes"));
+
 // Date context
 const ctx = T.buildDateContext(now);
 check("A17 date context: today, tomorrow and Friday resolved", /NOW in Casablanca: Monday,? 5 October 2026, 21:10/.test(ctx) && ctx.includes("2026-10-05 Monday = TODAY") && ctx.includes("2026-10-06 Tuesday = TOMORROW") && ctx.includes("2026-10-09 Friday") && ctx.includes("2026-10-19 Monday"));
@@ -174,6 +196,15 @@ check("B5 API rejects the JSON format field → next format used, same request s
 install({ [LITE]: [gem({ language: "en", reply: "Hi again", reservation: none })] });
 res = await post([{ role: "user", content: "hello" }]);
 check("B5 working format remembered for the next request", calls.length === 1 && Boolean(calls[0].gc.responseFormat));
+
+// Wrong-language answers: corrected on the next attempt; never turned into an error
+install({ [LITE]: [gem({ language: "en", reply: "Nous sommes ouverts de 12h00 à minuit, tous les jours. Souhaitez-vous réserver ?", reservation: none }), gem({ language: "en", reply: "We're open every day from 12:00 to midnight.", reservation: none })] });
+res = await post([{ role: "user", content: "What are your opening hours please?" }]);
+check("B7 French answer to an English guest → retried with a correction → English answer", res.statusCode === 200 && res.body.message.startsWith("We're open") && calls.length === 2 && !calls[0].system.includes("CORRECTION FOR THIS ATTEMPT") && /CORRECTION FOR THIS ATTEMPT: .*Write "reply" in English/.test(calls[1].system));
+const wrong = gem({ language: "en", reply: "Nous sommes ouverts de 12h00 à minuit, tous les jours. Souhaitez-vous réserver ?", reservation: none });
+install({ [LITE]: [wrong, wrong, wrong], [FLASH]: [wrong, wrong] });
+res = await post([{ role: "user", content: "What are your opening hours please?" }]);
+check("B7 every attempt in the wrong language → guest still gets an answer, not an error", res.statusCode === 200 && res.body.message.startsWith("Nous sommes ouverts") && calls.length === 5);
 
 // Privacy of logs
 const all = logs.join("\n");
