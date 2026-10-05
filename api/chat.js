@@ -777,24 +777,30 @@ async function handleHealth(req, res, requestId) {
       }
 
       if (probe) {
-        const single = [{ ...model, maxAttempts: 1 }];
-        const result = await generateReply(
-          buildSystemInstruction(now, null),
-          [{ role: "user", parts: [{ text: "Bonjour" }] }],
-          requestId,
-          (output) => resolveTurn(output, null, now),
-          single
-        );
-        const last = result.trail[result.trail.length - 1];
+        // Diagnostics: ?t=<ms> sets the timeout (max 25s); ?plain=1 sends a tiny
+        // prompt with no JSON schema; ?think=0 leaves the thinking setting out.
+        const plain = req.query?.plain === "1";
+        const timeoutMs = Math.min(Math.max(Number(req.query?.t) || ATTEMPT_TIMEOUT_MS, 2000), 25000);
+        const structuredMode = plain ? "promptOnly" : STRUCTURED_MODES[structuredModeFor.get(model.id) ?? 0];
+        const system = plain
+          ? 'Reply with this JSON only: {"language":"fr","reply":"Bonjour","reservation":{"stage":"none"}}'
+          : buildSystemInstruction(now, null);
+        const result = await callGemini(model, system, [{ role: "user", parts: [{ text: "Bonjour" }] }], {
+          useThinking: req.query?.think !== "0",
+          structuredMode,
+          timeoutMs,
+        });
         info.probe = {
-          ok: result.ok,
-          kind: last?.kind ?? null,
-          httpStatus: last?.httpStatus ?? null,
-          status: last?.geminiStatus ?? null,
-          message: result.ok ? null : last?.geminiMessage ?? null,
-          structuredMode: last?.structuredMode ?? null,
-          formatAttempts: result.trail.length,
-          language: result.ok ? result.turn.language : null,
+          ok: result.kind === "ok",
+          kind: result.kind,
+          httpStatus: result.httpStatus,
+          status: result.geminiStatus ?? null,
+          message: result.kind === "ok" ? null : result.geminiMessage ?? null,
+          structuredMode,
+          plain,
+          timeoutMs,
+          outputTokens: result.usage?.candidatesTokenCount ?? null,
+          promptTokens: result.usage?.promptTokenCount ?? null,
           ms: result.ms,
         };
       }
