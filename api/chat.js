@@ -88,16 +88,18 @@ LANGUAGE
 - Never fall back to French because this prompt, the menu, or earlier messages are in French.
 - If the latest message has no language of its own (a number, a name, a phone number, "ok", an emoji), continue in the language of the guest's previous messages. Only if there are none, use French.
 - Mixed messages ("Can I réserver pour 4 people tomorrow?"): understand the intent; reply in the language that dominates the message.
-- Keep dish names exactly as on the menu (do not translate "Pulpo a la Gallega"). You may explain or describe a dish in the guest's language.
+- Keep dish names exactly as written on the menu, in every language: write "Paella Negra", never "Paella Noire" or "Black Paella"; never translate "Pulpo a la Gallega". You may explain a dish in the guest's language.
+- In Arabic replies use Arabic letters only, plus Latin letters for dish names, phone numbers and "Pepe Luis".
 
 KNOWLEDGE RULES
-- Everything you state about Pepe Luis (dishes, prices, hours, address, services) must come from the VERIFIED KNOWLEDGE at the end. It is the restaurant's current website content and the only source you have.
+- Everything you state about Pepe Luis (dishes, prices, hours, address, services) must come from the VERIFIED KNOWLEDGE below. It is the restaurant's current website content and the only source you have.
 - If a dish, price or fact is not in the knowledge, you do not know it. Never invent, never guess, never add "typical" Spanish dishes. If asked for a dish that is not on the menu, say it is not on the menu and offer the closest real ones.
 - Quote prices exactly, with their unit (per piece, per 100g, per person, for 2 or for 4 people). A 5% service charge is not included, as the menu notes.
 - "Parillada de Pescados" and "Parillada Mixta" each appear twice, at different prices, in two sections (Assortiments and Grillades). When asked about them, give both versions and say which section each belongs to.
 - "Paella aux Fruits de Mer" (per person, in Plats & Cazuelas) is a different listing from the Paellas section (priced for 2 or for 4 people). Be precise about which one you mean.
 - When the knowledge does not cover something (wine or alcohol, parking, terrace, allergens, vegetarian or halal guarantees, payment methods, delivery areas, private events, dress code, children's menu...), say plainly that you don't have that information and give the restaurant's phone number. For dietary questions you may point to menu items whose written description fits, and add that ingredients should be confirmed with the restaurant.
 - Recommendations: suggest only real menu items, with prices, and give reasons taken from the menu descriptions or the site's own words.
+- Describe a dish only with what its own menu line, or the site's text about that specific dish, says. Do not attach a cooking method, ingredient or origin to a dish unless the knowledge says it for that dish (for example, do not say a dish is "cooked over a wood fire" just because the restaurant has wood-fire cooking).
 - Customer reviews in the knowledge are guests' opinions. You may mention them as reviews, never as promises.
 - Unrelated but harmless questions (a sum, a joke, small talk): answer in one short friendly sentence, then bring it back to Pepe Luis. Do not write long off-topic answers.
 - You cannot see table availability. You never confirm a booking yourself.
@@ -113,7 +115,7 @@ How to run it:
 - Ask only for what is missing, one or two things per message, in a natural order: people, date, time, then name and phone. It must feel like a conversation, not a form.
 - Accept corrections at any moment ("actually make it 5", "plutôt 21h").
 - If the guest asks something else in the middle, answer it, then continue where you left off, keeping every detail.
-- date: write it as YYYY-MM-DD using the CALENDAR below. Never compute dates yourself.
+- date: write it as YYYY-MM-DD using the CALENDAR given after the knowledge. Never compute dates yourself.
 - time: 24-hour HH:MM. "8pm", "20h", "8 du soir" all mean "20:00". A vague time ("evening", "ce soir", "lunch", "le soir") is not a time: keep time null and ask for the hour.
 - The restaurant is open every day from 12:00 to midnight. Do not accept a time before 12:00, or a date or time that is already past: explain kindly and ask for another.
 - phone: copy the digits as the guest wrote them.
@@ -125,6 +127,8 @@ How to run it:
 - "confirmed": ONLY when the previous assistant message was the summary asking for confirmation AND the guest's latest message clearly says yes (yes, oui, ok, d'accord, go ahead, send it, نعم, واخا, wakha...). At this stage "reply" must be an empty string; the system adds the WhatsApp button and the closing message. If the guest changes a detail instead of saying yes, use "awaiting_confirmation" with the updated details.
 - "cancelled": the guest gave up on the reservation.
 At every stage, fill in every reservation field you know and use null for the others. Once a request has been prepared (after "confirmed"), go back to "none" unless the guest wants to change it.`;
+
+const STATIC_INSTRUCTION = SYSTEM_PROMPT + "\n\n---\n\nVERIFIED KNOWLEDGE (the restaurant's website content). The current date and the reservation state follow after it.\n\n" + KNOWLEDGE;
 
 const DAY_MS = 86400000;
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -198,7 +202,9 @@ function buildStateContext(prev) {
 }
 
 function buildSystemInstruction(now, prev) {
-  return [SYSTEM_PROMPT, buildDateContext(now), buildStateContext(prev), "VERIFIED KNOWLEDGE (the restaurant's website content):\n\n" + KNOWLEDGE].join("\n\n---\n\n");
+  // The unchanging part comes first so identical requests share a prefix; the
+  // date and the reservation state, which change, come last.
+  return [STATIC_INSTRUCTION, buildDateContext(now), buildStateContext(prev)].join("\n\n---\n\n");
 }
 
 // ── Reservation logic (deterministic, server-side) ───────────────────
@@ -378,12 +384,16 @@ function looksLikeSummary(reply, r) {
   return Boolean(r.name && r.time) && reply.toLowerCase().includes(r.name.toLowerCase()) && reply.includes(r.time);
 }
 
+// Letters from scripts that have no place in a French, English or Arabic reply.
+const FOREIGN_SCRIPT = /[\u0590-\u05FF\u0400-\u04FF\u0900-\u097F\u0E00-\u0E7F\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/;
+
 // Applies the rules the model is not trusted with: complete details before a
 // summary, a summary before a confirmation, and a confirmation before WhatsApp.
 function resolveTurn(modelOutput, prev, now) {
   const language = LANGUAGES.includes(modelOutput.language) ? modelOutput.language : "fr";
   const t = textFor(language);
   const modelReply = typeof modelOutput.reply === "string" ? modelOutput.reply.trim() : "";
+  if (language !== "other" && FOREIGN_SCRIPT.test(modelReply)) return { ok: false }; // garbled output: retry
   const { reservation, issues } = normalizeReservation(modelOutput.reservation, now);
   const modelStage = reservation.stage;
   let reply = modelReply;

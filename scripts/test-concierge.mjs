@@ -89,6 +89,10 @@ r = T.resolveTurn(out("en", "", { stage: "none" }), null, now);
 check("A15 empty reply → rejected so the attempt is retried", r.ok === false);
 r = T.resolveTurn(out("en", "", { stage: "collecting", guests: 4, date: null, time: null, name: null, phone: null, note: null }), null, now);
 check("A15 empty reply while collecting → asks for the next missing detail", r.reply === "For which date?");
+r = T.resolveTurn(out("ar", "نحن مفت\u05D5\u05D7ون من 12:00", { stage: "none" }), null, now);
+check("A15 Arabic reply with stray Hebrew letters → rejected so the attempt is retried", r.ok === false);
+r = T.resolveTurn(out("ar", "نحن مفتوحون من 12:00 إلى منتصف الليل. Paella Negra 😊", { stage: "none" }), null, now);
+check("A15 clean Arabic reply with a Latin dish name and emoji → accepted", r.ok === true);
 r = T.resolveTurn(out("en", "ok", { stage: "collecting", ...full, phone: "12345" }), null, now);
 check("A16 too-short phone number not accepted", r.reservation.phone === null && r.reservation.stage === "collecting");
 
@@ -131,6 +135,7 @@ check("B1 primary is Flash-Lite with minimal thinking", c.model === LITE && c.gc
 check("B1 key in header only", c.headers["x-goog-api-key"] === FAKE_KEY && !c.url.includes("key="));
 check("B1 JSON schema requested", c.gc.responseMimeType === "application/json" && c.gc.responseJsonSchema.required.includes("reservation"));
 check("B1 system prompt carries today's date, the calendar and the generated knowledge", /NOW in Casablanca: \w+,? \d+ \w+ 20\d\d, \d\d:\d\d/.test(c.system) && c.system.includes("= TOMORROW") && c.system.includes("Paella Negra — Paella noire aux fruits de mer — 320 dhs") && c.system.includes("H9Q6+F2Q") && c.system.includes("no reservation in progress"));
+check("B1 unchanging text first, date and state last", c.system.indexOf("### Boissons") < c.system.indexOf("NOW in Casablanca") && c.system.indexOf("NOW in Casablanca") < c.system.indexOf("RESERVATION STATE BEFORE THIS MESSAGE"));
 check("B1 old invented dishes are gone from the prompt", !/Croquetas de Jam|Churros|Tortilla Espa|Entrecôte|Paella Valenciana|Crème Catalane/.test(c.system));
 check("B1 response shape", res.statusCode === 200 && res.body.message === "Hello! How can I help?" && res.body.language === "en" && res.body.reservation.stage === "none" && res.body.handoff === null && res.body.meta.model === LITE);
 
