@@ -110,6 +110,11 @@ check("A18 server-written summary follows the guest's language even if the model
 r = T.resolveTurn(out("en", "We don't have churros, but we do have Tarta de Queso Vasco and Crema Catalana for 50 dhs.", { stage: "none" }), null, now, "Do you have churros?");
 check("A18 correct English reply passes", r.ok === true);
 
+r = T.resolveTurn(out("ar", "nouftahou koulou yawm min as-sa'a ath-thaniyata 'ashrata zawalan ila muntasof al-layl.", { stage: "none" }), null, now, "ما هي أوقات العمل عندكم؟");
+check("A18 Arabic question answered in Latin transliteration → sent back with a correction", r.ok === false && /Arabic script/.test(r.retryHint));
+r = T.resolveTurn(out("ar", "نحن مفتوحون كل يوم من 12:00 إلى منتصف الليل. نرحب بكم في Pepe Luis.", { stage: "none" }), null, now, "ما هي أوقات العمل عندكم؟");
+check("A18 Arabic question answered in Arabic script (with the Latin name Pepe Luis) → accepted", r.ok === true);
+
 // Invalid time at any stage is explained immediately
 r = T.resolveTurn(out("en", "Could you tell me your name and phone number?", { stage: "collecting", guests: 2, date: "2026-10-05", time: "20:00", name: null, phone: null, note: null }), null, now, "Book a table for 2 tonight at 8pm");
 check("A19 'tonight at 8pm' when it is already 21:10 → told it has passed, not silently dropped", r.reply.startsWith("That time has already passed today") && r.reservation.time === null && r.reservation.guests === 2 && r.reservation.stage === "collecting");

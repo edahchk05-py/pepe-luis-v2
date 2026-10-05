@@ -106,7 +106,7 @@ Return ONE JSON object only:
 LANGUAGE
 - "language" is the language of the guest's LATEST message ("ar" = Arabic or Darija); write "reply" in it. English → English, French → French, Arabic → Arabic. Never default to French because the menu or earlier messages are French.
 - No language of its own (a number, a name, "ok"): keep the guest's previous language, otherwise French. Mixed message: understand it and follow the dominant language.
-- Dish names stay exactly as on the menu in every language ("Paella Negra", never "Paella Noire"). In Arabic, use Latin letters only for dish names, numbers and "Pepe Luis".
+- Dish names stay exactly as on the menu in every language ("Paella Negra", never "Paella Noire"). An Arabic reply is written in Arabic script (never transliterated into Latin letters); only dish names, numbers and "Pepe Luis" stay in Latin letters.
 
 FACTS
 - Say only what the KNOWLEDGE below states; it is the restaurant's website and your only source. Anything else you do not know: say so and give the phone number. Never invent or assume a dish, price, ingredient or cooking method. A dish that is not listed is not on the menu: say so and offer the closest real ones.
@@ -404,6 +404,11 @@ function detectLanguage(text) {
   return null;
 }
 const LANGUAGE_NAMES = { fr: "French", en: "English", ar: "Arabic" };
+// Share of a text's letters that are Arabic script (0 when it has no letters).
+function arabicShare(text) {
+  const letters = (text.match(/\p{L}/gu) ?? []).length;
+  return letters ? (text.match(/[\u0600-\u06FF\u0750-\u077F]/g) ?? []).length / letters : 0;
+}
 
 // Letters from scripts that have no place in a French, English or Arabic reply.
 const FOREIGN_SCRIPT = /[\u0590-\u05FF\u0400-\u04FF\u0900-\u097F\u0E00-\u0E7F\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/;
@@ -424,6 +429,9 @@ function resolveTurn(modelOutput, prev, now, guestText = "") {
     language = guestLanguage; // server-written texts (summary, questions) use the guest's language regardless
   } else if (replyLanguage && LANGUAGE_NAMES[language] && replyLanguage !== language) {
     retryHint = `Your "reply" was written in ${LANGUAGE_NAMES[replyLanguage]} but the guest is writing in ${LANGUAGE_NAMES[language]}. Write "reply" in ${LANGUAGE_NAMES[language]}.`;
+  } else if (guestLanguage === "ar" && modelReply && arabicShare(modelReply) < 0.3) {
+    // The guest wrote in Arabic script; a reply spelled out in Latin letters is not acceptable.
+    retryHint = 'The guest wrote in Arabic script. Write "reply" in Arabic script, not transliterated into Latin letters.';
   } else if (language !== "other" && FOREIGN_SCRIPT.test(modelReply)) {
     retryHint = `Your "reply" contained letters from the wrong alphabet. Write it again cleanly in ${LANGUAGE_NAMES[language] ?? "the guest's language"}.`;
   }
