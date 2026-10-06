@@ -812,93 +812,182 @@ footer{background:#0D1F13;border-top:1px solid rgba(255,255,255,.05);padding:4.5
   .progress{display:none}
 }
 
-/* ── AI Concierge Widget ─────────────────────────── */
+/* ── AI Concierge ─────────────────────────── */
+/* Launcher: a small pill that says what it is. It sits above every other layer of the
+   page (nav, sticky booking bar) and only steps aside for the concierge itself and the
+   full-screen menu, whose own "Réserver" button opens the concierge. */
 .concierge-fab {
   position: fixed;
-  bottom: 2rem;
-  right: 2rem;
-  width: 64px;
-  height: 64px;
-  background: var(--iv, #F8F4EC);
-  border-radius: 50%;
-  border: 2.5px solid var(--gld, #C9A84C);
-  cursor: pointer;
-  display: flex;
+  right: 1.5rem;
+  bottom: calc(var(--fab-gap, 1.5rem) + var(--fab-lift, env(safe-area-inset-bottom, 0px)));
+  z-index: 9090;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  box-shadow: 0 4px 24px rgba(27,67,50,.32), 0 0 0 0 rgba(201,168,76,.4);
-  z-index: 9000;
-  transition: transform .2s, box-shadow .2s;
-  animation: fab-glow 3s ease-in-out infinite;
-  overflow: hidden;
-  padding: 0;
+  gap: .7rem;
+  height: 54px;
+  padding: 5px 1.3rem 5px 5px;
+  background: var(--iv, #F8F4EC);
+  color: var(--g, #1B4332);
+  border: 1px solid var(--gld, #C9A84C);
+  border-radius: 999px;
+  box-shadow: 0 12px 32px rgba(15,40,29,.30), 0 2px 8px rgba(15,40,29,.18);
+  font-family: 'Josefin Sans', sans-serif;
+  font-size: .66rem;
+  font-weight: 600;
+  letter-spacing: .17em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform .25s ease, box-shadow .25s ease, bottom .4s cubic-bezier(.22,1,.36,1), opacity .25s ease, visibility .25s;
 }
-.concierge-fab:hover { transform: scale(1.08); box-shadow: 0 6px 32px rgba(27,67,50,.45); animation: none; }
-.concierge-fab .fab-logo {
-  width: 100%; height: 100%;
+/* One quiet signal that it is alive: a gold ring that breathes out every few seconds. */
+.concierge-fab::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  border: 1px solid var(--gld, #C9A84C);
+  opacity: 0;
+  pointer-events: none;
+  animation: fab-halo 5.5s ease-out 2s infinite;
+}
+@keyframes fab-halo {
+  0% { opacity: .75; transform: scale(1); }
+  30%, 100% { opacity: 0; transform: scale(1.1, 1.36); }
+}
+.concierge-fab:hover { transform: translateY(-2px); box-shadow: 0 16px 38px rgba(15,40,29,.36), 0 3px 10px rgba(15,40,29,.2); }
+.concierge-fab:active { transform: scale(.97); }
+.concierge-fab:focus-visible { outline: 2px solid var(--g, #1B4332); outline-offset: 3px; }
+.fab-avatar {
+  width: 44px; height: 44px;
+  flex: none;
   border-radius: 50%;
+  overflow: hidden;
+  border: 1.5px solid var(--gld, #C9A84C);
+  background: var(--g, #1B4332);
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Playfair Display', serif;
+  font-style: italic;
+  font-size: .95rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--gld, #C9A84C);
+}
+.fab-avatar img {
+  width: 100%; height: 100%;
   object-fit: cover;
   object-position: center 34%;
   display: block;
 }
-.concierge-fab .fab-pulse {
-  position: absolute;
-  top: 2px; right: 2px;
-  width: 16px; height: 16px;
-  background: var(--g, #1B4332);
-  border-radius: 50%;
-  border: 2px solid var(--iv, #F8F4EC);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.fab-label { display: block; line-height: 1; padding-top: .16em; }
+body.concierge-open .concierge-fab,
+#menu-overlay.mo-open ~ .concierge-fab {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(8px);
 }
-.concierge-fab .fab-pulse::after {
-  content: '';
-  width: 6px; height: 6px;
-  background: var(--gld, #C9A84C);
-  border-radius: 50%;
+/* The sticky booking bar steps aside while the concierge is open. */
+body.concierge-open .bookbar {
+  transform: translateY(110%) !important;
+  pointer-events: none;
 }
-@keyframes fab-glow {
-  0%, 100% { box-shadow: 0 4px 24px rgba(27,67,50,.32), 0 0 0 0 rgba(201,168,76,.4); }
-  50% { box-shadow: 0 4px 24px rgba(27,67,50,.32), 0 0 0 8px rgba(201,168,76,.0); }
+@media (prefers-reduced-motion: reduce) {
+  .concierge-fab::after { animation: none; }
+  .concierge-fab, .concierge-panel, .concierge-overlay { transition-duration: .01s !important; }
 }
 
-/* Panel overlay */
+/* Overlay: always laid over the part of the screen that is actually visible. The script
+   keeps --cp-top / --cp-vh on the visual viewport, so when a phone keyboard opens the
+   whole concierge moves above it instead of sliding underneath. */
 .concierge-overlay {
   position: fixed;
-  inset: 0;
+  left: 0;
+  right: 0;
+  top: var(--cp-top, 0px);
+  height: var(--cp-vh, 100vh);
   z-index: 9100;
   display: flex;
   align-items: flex-end;
+  justify-content: center;
   pointer-events: none;
+  visibility: hidden;
   opacity: 0;
-  transition: opacity .25s;
+  transition: opacity .3s ease, visibility 0s linear .3s;
 }
 .concierge-overlay.open {
-  pointer-events: all;
+  pointer-events: auto;
+  visibility: visible;
   opacity: 1;
+  transition: opacity .3s ease;
 }
+/* Phone: a dimmed veil, lighter at the top so the restaurant stays recognisable behind. */
 .concierge-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0,0,0,.45);
+  background: linear-gradient(to bottom, rgba(10,26,19,.2) 0%, rgba(10,26,19,.52) 100%);
 }
+/* Phone: a drawer over the site, about 70% of the visible height. */
 .concierge-panel {
   position: relative;
   width: 100%;
-  max-width: 480px;
+  max-width: 520px;
   margin: 0 auto;
-  height: 88svh;
+  height: calc(var(--cp-vh, 100vh) * .72);
+  min-height: min(400px, calc(var(--cp-vh, 100vh) - 44px));
+  max-height: calc(var(--cp-vh, 100vh) - 44px);
   background: var(--iv, #F8F4EC);
-  border-radius: 20px 20px 0 0;
+  border-radius: 22px 22px 0 0;
+  box-shadow: 0 -18px 50px rgba(10,26,19,.34);
   display: flex;
   flex-direction: column;
-  transform: translateY(100%);
-  transition: transform .35s cubic-bezier(.22,1,.36,1);
+  transform: translateY(102%);
+  transition: transform .4s cubic-bezier(.22,1,.36,1), height .22s ease;
   overflow: hidden;
 }
 .concierge-overlay.open .concierge-panel {
   transform: translateY(0);
+}
+/* Keyboard open: take the room that is left above it, keeping a strip of the site in view. */
+.concierge-overlay.kb .concierge-panel {
+  height: calc(var(--cp-vh, 100vh) - 44px);
+  min-height: 0;
+}
+/* Drawer handle */
+.concierge-panel::before {
+  content: '';
+  position: absolute;
+  top: 7px; left: 50%;
+  width: 38px; height: 4px;
+  margin-left: -19px;
+  border-radius: 2px;
+  background: rgba(255,255,255,.34);
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* Desktop: a floating chat card in the corner. No veil, and the page behind stays usable. */
+@media (min-width: 769px) {
+  .concierge-overlay,
+  .concierge-overlay.open { pointer-events: none; justify-content: flex-end; padding: 0 1.5rem 1.5rem; }
+  .concierge-backdrop { display: none; }
+  .concierge-panel {
+    width: 400px;
+    max-width: calc(100vw - 3rem);
+    margin: 0;
+    height: min(640px, calc(var(--cp-vh, 100vh) - 3rem));
+    min-height: 0;
+    max-height: none;
+    border-radius: 20px;
+    box-shadow: 0 24px 70px rgba(10,26,19,.38), 0 0 0 1px rgba(201,168,76,.4);
+    transform: translateY(18px) scale(.98);
+    transform-origin: bottom right;
+    opacity: 0;
+    transition: transform .3s cubic-bezier(.22,1,.36,1), opacity .25s ease;
+  }
+  .concierge-overlay.open .concierge-panel { pointer-events: auto; transform: none; opacity: 1; }
+  .concierge-panel::before { display: none; }
 }
 
 /* Panel header */
@@ -941,7 +1030,8 @@ footer{background:#0D1F13;border-top:1px solid rgba(255,255,255,.05);padding:4.5
   background: rgba(255,255,255,.15);
   border: none;
   color: #fff;
-  width: 32px; height: 32px;
+  width: 36px; height: 36px;
+  flex: none;
   border-radius: 50%;
   font-size: 1.1rem;
   cursor: pointer;
@@ -960,7 +1050,9 @@ footer{background:#0D1F13;border-top:1px solid rgba(255,255,255,.05);padding:4.5
   gap: .75rem;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  min-height: 0;
 }
+.cp-messages::after { content: ''; flex: none; height: .4rem; }
 .cp-msg {
   max-width: 85%;
   padding: .7rem .95rem;
@@ -1070,11 +1162,14 @@ footer{background:#0D1F13;border-top:1px solid rgba(255,255,255,.05);padding:4.5
 
 @media(max-width:768px) {
   .concierge-fab {
-    bottom: calc(1.5rem + env(safe-area-inset-bottom));
-    right: 1.2rem;
-    width: 58px;
-    height: 58px;
+    right: 1rem;
+    height: 50px;
+    padding-right: 1.1rem;
+    font-size: .62rem;
+    --fab-gap: 1rem;
   }
+  .fab-avatar { width: 40px; height: 40px; }
+  .cp-header { padding-top: 1.25rem; }
 }
 
 /* Prevent iOS zoom on input tap */
@@ -1096,7 +1191,7 @@ footer{background:#0D1F13;border-top:1px solid rgba(255,255,255,.05);padding:4.5
     <li><a href="#menu" onclick="openMenu(event)" data-fr="Menu" data-en="Menu">Menu</a></li>
     <li><a href="#reviews" data-fr="Avis" data-en="Reviews">Avis</a></li>
     <li><a href="#visit" data-fr="Nous Trouver" data-en="Find Us">Nous Trouver</a></li>
-    <li><a href="tel:+212619536933" class="nav-cta" data-fr="Réserver" data-en="Book">Réserver</a></li>
+    <li><a data-concierge="reservation" href="tel:+212619536933" class="nav-cta" data-fr="Réserver" data-en="Book">Réserver</a></li>
   </ul>
   <button class="lang-btn" id="lang-btn" onclick="toggleLang()" aria-label="Switch language">EN</button>
   <button class="nav-ham" id="ham" aria-label="Navigation" aria-expanded="false">
@@ -1121,7 +1216,7 @@ footer{background:#0D1F13;border-top:1px solid rgba(255,255,255,.05);padding:4.5
     </h1>
     <p class="hero-sub" data-fr="Fruits de mer d'exception, paella légendaire, et l'âme de l'Espagne au cœur de Casablanca." data-en="Exceptional seafood, legendary paella, and the soul of Spain in the heart of Casablanca.">Fruits de mer d'exception, paella légendaire, et l'âme de l'Espagne au cœur de Casablanca.</p>
     <div class="hero-btns">
-      <a href="https://wa.me/212619536933?text=Bonjour%2C%20je%20souhaite%20r%C3%A9server%20une%20table%20chez%20Pepe%20Luis" target="_blank" rel="noopener" class="btn btn-solid" data-fr="Réserver sur WhatsApp" data-en="Book on WhatsApp">Réserver sur WhatsApp</a>
+      <a data-concierge="reservation" href="https://wa.me/212619536933?text=Bonjour%2C%20je%20souhaite%20r%C3%A9server%20une%20table%20chez%20Pepe%20Luis" target="_blank" rel="noopener" class="btn btn-solid" data-fr="Réserver sur WhatsApp" data-en="Book on WhatsApp">Réserver sur WhatsApp</a>
       <a href="#menu" class="btn btn-ghost" onclick="openMenu(event)" data-fr="Voir le Menu" data-en="View the Menu">Voir le Menu</a>
     </div>
   </div>
@@ -1218,7 +1313,7 @@ footer{background:#0D1F13;border-top:1px solid rgba(255,255,255,.05);padding:4.5
     <p class="eyebrow r" data-fr="L'Expérience" data-en="The Experience">L'Expérience</p>
     <h2 class="sec-title r"><span data-fr="Plus qu'un repas —" data-en="More than a meal —">Plus qu'un repas —</span><br><em data-fr="un souvenir" data-en="a memory">un souvenir</em></h2>
     <p class="r r1"><span data-fr="'Nous avons découvert ce restaurant par hasard et nous l'avons adoré. Le personnel est très attentionné — ils ont même arrangé un serveur anglophone pour nous.'" data-en="'We discovered this restaurant by chance and absolutely loved it. The staff is very attentive — they even arranged an English-speaking server for us.'">"Nous avons découvert ce restaurant par hasard et nous l'avons adoré. Le personnel est très attentionné — ils ont même arrangé un serveur anglophone pour nous."</span></p>
-    <a href="tel:+212619536933" class="btn btn-solid r r2" data-fr="Réserver une Table · 06 19 53 69 33" data-en="Book a Table · 06 19 53 69 33">Réserver une Table · 06 19 53 69 33</a>
+    <a data-concierge="reservation" href="tel:+212619536933" class="btn btn-solid r r2" data-fr="Réserver une Table" data-en="Book a Table">Réserver une Table</a>
   </div>
 </div>
 
@@ -1230,7 +1325,7 @@ footer{background:#0D1F13;border-top:1px solid rgba(255,255,255,.05);padding:4.5
     <p class="eyebrow r" data-fr="La Maîtrise" data-en="Mastery">La Maîtrise</p>
     <h2 class="sec-title r"><span data-fr="En" data-en="Live from">En</span> <em data-fr="direct" data-en="the kitchen">direct</em><br><span data-fr="des fourneaux" data-en="the kitchen">des fourneaux</span></h2>
     <p class="r r1" data-fr="Derrière chaque plat, il y a une flamme vive et deux mains expertes. Notre cuisine est un spectacle en soi — passionnée, précise, vivante." data-en="Behind every dish, there's a live flame and two expert hands. Our kitchen is a show in itself — passionate, precise, alive.">Derrière chaque plat, il y a une flamme vive et deux mains expertes. Notre cuisine est un spectacle en soi — passionnée, précise, vivante.</p>
-    <a href="https://wa.me/212619536933?text=Bonjour%2C%20je%20souhaite%20r%C3%A9server%20une%20table%20chez%20Pepe%20Luis" target="_blank" rel="noopener" class="btn btn-solid r r2" data-fr="WhatsApp Réservation" data-en="WhatsApp Booking" data-fr="WhatsApp Réservation" data-en="WhatsApp Reservation">WhatsApp Réservation</a>
+    <a data-concierge="reservation" href="https://wa.me/212619536933?text=Bonjour%2C%20je%20souhaite%20r%C3%A9server%20une%20table%20chez%20Pepe%20Luis" target="_blank" rel="noopener" class="btn btn-solid r r2" data-fr="WhatsApp Réservation" data-en="WhatsApp Booking" data-fr="WhatsApp Réservation" data-en="WhatsApp Reservation">WhatsApp Réservation</a>
   </div>
 </div>
 
@@ -1251,7 +1346,7 @@ footer{background:#0D1F13;border-top:1px solid rgba(255,255,255,.05);padding:4.5
       <span class="ptag" data-fr="Socarrat Parfait" data-en="Perfect Socarrat">Socarrat Parfait</span>
     </div>
     <div class="r r3">
-      <a href="tel:+212619536933" class="btn btn-solid" style="background:var(--gp);color:var(--g)" data-fr="Réserver pour ce soir" data-en="Book for Tonight">Réserver pour ce soir</a>
+      <a data-concierge="reservation" href="tel:+212619536933" class="btn btn-solid" style="background:var(--gp);color:var(--g)" data-fr="Réserver pour ce soir" data-en="Book for Tonight">Réserver pour ce soir</a>
     </div>
   </div>
 </div>
@@ -1269,7 +1364,7 @@ footer{background:#0D1F13;border-top:1px solid rgba(255,255,255,.05);padding:4.5
     <div class="pull-quote r r1"><span data-fr="'Chez Pepe Luis, on ne commence jamais un repas sans partager. Le plateau d'entrées est offert, comme à la maison.'" data-en="'At Pepe Luis, a meal never begins without sharing. The starter platter is on us — just like at home.'">"Chez Pepe Luis, on ne commence jamais un repas sans partager. Le plateau d'entrées est offert, comme à la maison."</span></div>
     <p class="sec-lead r r2" data-fr="Une dizaine de petites assiettes d'antipasti espagnols posées sur votre table dès l'arrivée — olives, conserves, légumes marinés. Un geste de générosité qui dit tout sur l'esprit de la maison." data-en="A dozen small plates of Spanish antipasti placed on your table upon arrival — olives, preserves, marinated vegetables. A gesture of generosity that says everything about the spirit of this house.">Une dizaine de petites assiettes d'antipasti espagnols posées sur votre table dès l'arrivée — olives, conserves, légumes marinés. Un geste de générosité qui dit tout sur l'esprit de la maison.</p>
     <div class="r r3">
-      <a href="https://wa.me/212619536933?text=Bonjour%2C%20je%20souhaite%20r%C3%A9server%20une%20table%20chez%20Pepe%20Luis" target="_blank" rel="noopener" class="btn btn-solid" style="background:var(--gp);color:var(--g)" data-fr="WhatsApp Réservation" data-en="WhatsApp Reservation">WhatsApp Réservation</a>
+      <a data-concierge="reservation" href="https://wa.me/212619536933?text=Bonjour%2C%20je%20souhaite%20r%C3%A9server%20une%20table%20chez%20Pepe%20Luis" target="_blank" rel="noopener" class="btn btn-solid" style="background:var(--gp);color:var(--g)" data-fr="WhatsApp Réservation" data-en="WhatsApp Reservation">WhatsApp Réservation</a>
     </div>
   </div>
 </div>
@@ -1422,7 +1517,7 @@ footer{background:#0D1F13;border-top:1px solid rgba(255,255,255,.05);padding:4.5
   <p class="rescta-note r r1">Casablanca · Ouvert 7j/7 · 12h – Minuit</p>
   <div class="rescta-btns r r2">
     <a href="tel:+212619536933" class="btn btn-solid" data-fr="Appeler Maintenant" data-en="Call Now">Appeler Maintenant</a>
-    <a href="https://wa.me/212619536933?text=Bonjour%2C%20je%20souhaite%20r%C3%A9server%20une%20table%20chez%20Pepe%20Luis" target="_blank" rel="noopener" class="btn btn-ghost" data-fr="WhatsApp Réservation" data-en="WhatsApp Reservation">WhatsApp Réservation</a>
+    <a data-concierge="reservation" href="https://wa.me/212619536933?text=Bonjour%2C%20je%20souhaite%20r%C3%A9server%20une%20table%20chez%20Pepe%20Luis" target="_blank" rel="noopener" class="btn btn-ghost" data-fr="WhatsApp Réservation" data-en="WhatsApp Reservation">WhatsApp Réservation</a>
     <a href="#menu" class="btn btn-ghost" onclick="openMenu(event)">Voir le Menu</a>
   </div>
 </section>
@@ -1496,6 +1591,7 @@ footer{background:#0D1F13;border-top:1px solid rgba(255,255,255,.05);padding:4.5
 
   // Scroll handler
   window.addEventListener('scroll', function(){
+    if(document.body.classList.contains('concierge-open')) return; // page is held still behind the concierge
     const y = window.scrollY;
     const docH = document.documentElement.scrollHeight - window.innerHeight;
     nav.classList.toggle('scrolled', y > 60);
@@ -1763,7 +1859,7 @@ footer{background:#0D1F13;border-top:1px solid rgba(255,255,255,.05);padding:4.5
 
     </div><!-- /mo-body -->
     <div class="mo-footer">
-      <a href="tel:+212619536933" class="btn btn-green" style="font-size:.65rem;padding:.85rem 2rem" data-fr="Réserver · 06 19 53 69 33" data-en="Book · 06 19 53 69 33">Réserver · 06 19 53 69 33</a>
+      <a data-concierge="reservation" href="tel:+212619536933" class="btn btn-green" style="font-size:.65rem;padding:.85rem 2rem" data-fr="Réserver une table" data-en="Book a table">Réserver une table</a>
     </div>
   </div><!-- /mo-panel -->
 </div><!-- /menu-overlay -->
@@ -2263,10 +2359,13 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>
 
 <!-- AI Concierge FAB -->
-<button class="concierge-fab" onclick="openConcierge()" aria-label="Assistant Pepe Luis" id="concierge-fab-btn"></button>
+<button class="concierge-fab" type="button" onclick="openConcierge()" aria-label="Ouvrir le concierge IA Pepe Luis" id="concierge-fab-btn">
+  <span class="fab-avatar" id="fab-avatar" aria-hidden="true"></span>
+  <span class="fab-label" data-fr="Concierge IA" data-en="AI Concierge">Concierge IA</span>
+</button>
 
 <!-- AI Concierge Panel -->
-<div class="concierge-overlay" id="concierge-overlay">
+<div class="concierge-overlay" id="concierge-overlay" role="dialog" aria-label="Concierge IA Pepe Luis">
   <div class="concierge-backdrop" onclick="closeConcierge()"></div>
   <div class="concierge-panel">
     <div class="cp-header">
@@ -2274,7 +2373,7 @@ document.addEventListener('DOMContentLoaded', function() {
         <div class="cp-brand-icon" id="cp-brand-icon"></div>
         <div class="cp-brand-text">
           <div class="cp-name">Pepe Luis</div>
-          <div class="cp-sub">Concierge virtuel</div>
+          <div class="cp-sub" data-fr="Concierge IA" data-en="AI Concierge">Concierge IA</div>
         </div>
       </div>
       <button class="cp-close" onclick="closeConcierge()" aria-label="Fermer">&#215;</button>
@@ -2295,26 +2394,217 @@ document.addEventListener('DOMContentLoaded', function() {
 var cpMessages = [];
 var cpLoading = false;
 var cpGreeted = false;
+var cpStick = true;      // follow new messages, unless the guest has scrolled up to read
+var cpLocked = false;    // page behind is held still (phones only)
+var cpScrollY = 0;
+var cpBaseH = 0;         // visible height with the keyboard closed
+var cpPhone = window.matchMedia('(max-width: 768px)');
+var cpFinePointer = window.matchMedia('(hover: hover) and (pointer: fine)');
+
+var CP_TEXT = {
+  fr: {
+    reserve: 'Bonjour 👋 Je suis votre concierge Pepe Luis. Je peux vous aider à réserver une table. Pour commencer, pour combien de personnes souhaitez-vous réserver ?',
+    intent: 'Je souhaite réserver une table.'
+  },
+  en: {
+    reserve: 'Hello 👋 I\'m your Pepe Luis concierge. I can help you book a table. To start, how many people will you be?',
+    intent: 'I\'d like to book a table.'
+  }
+};
 
 // ── Open / Close ─────────────────────────────────
-function openConcierge() {
-  document.getElementById('concierge-overlay').classList.add('open');
-  document.body.style.overflow = 'hidden';
-  if (!cpGreeted) {
+// mode === 'reservation' when the guest tapped one of the site's "Réserver" buttons.
+function openConcierge(mode) {
+  var overlay = document.getElementById('concierge-overlay');
+  if (!overlay.classList.contains('open')) {
+    var menu = document.getElementById('menu-overlay');
+    if (menu && menu.classList.contains('mo-open') && typeof closeMenu === 'function') closeMenu();
+    document.body.classList.add('concierge-open');
+    if (cpPhone.matches) cpLockPage();
+    cpBaseH = 0;
+    cpSyncViewport();
+    overlay.classList.add('open');
+  }
+  if (mode === 'reservation') {
+    cpStartReservation();
+  } else if (!cpGreeted) {
     cpGreeted = true;
     setTimeout(function() {
       cpAddBot('Bienvenido à Pepe Luis 🌿\n\nJe suis votre concierge virtuel. Je peux réserver votre table, vous renseigner sur le menu, les horaires ou l\'adresse.\n\nQue puis-je faire pour vous ?');
     }, 400);
   }
-  setTimeout(function() {
-    document.getElementById('cp-input').focus();
-  }, 500);
+  // On a computer the cursor goes straight to the input. On a phone the keyboard
+  // only opens when the guest taps the input, so the conversation is seen first.
+  if (cpFinePointer.matches) {
+    setTimeout(function() { document.getElementById('cp-input').focus(); }, 450);
+  }
 }
 
 function closeConcierge() {
-  document.getElementById('concierge-overlay').classList.remove('open');
-  document.body.style.overflow = '';
+  var overlay = document.getElementById('concierge-overlay');
+  if (!overlay.classList.contains('open')) return;
+  var input = document.getElementById('cp-input');
+  if (input) input.blur();
+  overlay.classList.remove('open');
+  overlay.classList.remove('kb');
+  cpUnlockPage();
+  document.body.classList.remove('concierge-open');
 }
+
+// A "Réserver" button was tapped: the concierge opens on the reservation, and the
+// existing reservation flow takes over (guests → date → time → name → phone → summary
+// → confirmation → WhatsApp). Nothing here talks to WhatsApp.
+function cpStartReservation() {
+  for (var i = cpMessages.length - 1; i >= 0; i--) {
+    var r = cpMessages[i].role === 'assistant' && cpMessages[i].reservation;
+    if (r) {
+      // A booking is already under way in this conversation: carry on with it.
+      if (r.stage === 'collecting' || r.stage === 'awaiting_confirmation') return;
+      break;
+    }
+  }
+  var t = CP_TEXT[typeof currentLang === 'string' && currentLang === 'en' ? 'en' : 'fr'];
+  cpGreeted = true;
+  // What tapping "Réserver" means, said on the guest's behalf, so the concierge
+  // knows why the conversation started. It is not shown as a bubble.
+  cpMessages.push({ role: 'user', content: t.intent });
+  cpMessages.push({
+    role: 'assistant',
+    content: t.reserve,
+    reservation: { stage: 'collecting', guests: null, date: null, time: null, name: null, phone: null, note: null }
+  });
+  cpAddBot(t.reserve);
+  cpScrollDown(true);
+}
+
+// Hold the page still behind the drawer (phones). Without this, iOS scrolls the
+// whole site when the keyboard opens.
+function cpLockPage() {
+  if (cpLocked) return;
+  cpLocked = true;
+  cpScrollY = window.scrollY || window.pageYOffset || 0;
+  var b = document.body;
+  b.style.position = 'fixed';
+  b.style.top = (-cpScrollY) + 'px';
+  b.style.left = '0';
+  b.style.right = '0';
+  b.style.width = '100%';
+  b.style.overflow = 'hidden';
+}
+function cpUnlockPage() {
+  if (!cpLocked) return;
+  cpLocked = false;
+  var b = document.body;
+  b.style.position = '';
+  b.style.top = '';
+  b.style.left = '';
+  b.style.right = '';
+  b.style.width = '';
+  b.style.overflow = '';
+  var root = document.documentElement;
+  var smooth = root.style.scrollBehavior;
+  root.style.scrollBehavior = 'auto'; // return to the same spot at once, without animating
+  window.scrollTo(0, cpScrollY);
+  root.style.scrollBehavior = smooth;
+}
+
+// Keep the concierge on the part of the screen that is really visible. When a phone
+// keyboard opens, the visible area shrinks: the drawer shrinks with it and stays above
+// the keyboard, input at the bottom, messages above it.
+function cpSyncViewport() {
+  var overlay = document.getElementById('concierge-overlay');
+  if (!overlay) return;
+  var vv = window.visualViewport;
+  var zoomed = vv && vv.scale > 1.01; // pinch-zoom is not a keyboard
+  var h = vv && !zoomed ? vv.height : window.innerHeight;
+  var top = vv && !zoomed ? vv.offsetTop : 0;
+  overlay.style.setProperty('--cp-vh', h + 'px');
+  overlay.style.setProperty('--cp-top', top + 'px');
+  if (h > cpBaseH) cpBaseH = h;
+  var keyboard = cpPhone.matches && !zoomed && cpBaseH - h > 140;
+  var was = overlay.classList.contains('kb');
+  overlay.classList.toggle('kb', keyboard);
+  if (keyboard && !was) cpScrollDown(true);   // keyboard just opened: show the latest message
+  else cpScrollDown(false);
+}
+
+// ── Scrolling ────────────────────────────────────
+function cpNearBottom() {
+  var m = document.getElementById('cp-messages');
+  return m.scrollHeight - m.scrollTop - m.clientHeight < 70;
+}
+function cpScrollDown(force) {
+  var m = document.getElementById('cp-messages');
+  if (!m) return;
+  if (force) cpStick = true;
+  if (cpStick) m.scrollTop = m.scrollHeight;
+}
+
+(function() {
+  var overlay = document.getElementById('concierge-overlay');
+  var msgs = document.getElementById('cp-messages');
+  if (!overlay || !msgs) return;
+
+  // If the guest scrolls up to read, stop following; resume when they return to the bottom.
+  msgs.addEventListener('scroll', function() { cpStick = cpNearBottom(); }, { passive: true });
+
+  var resync = function() { if (overlay.classList.contains('open')) cpSyncViewport(); };
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', resync);
+    window.visualViewport.addEventListener('scroll', resync);
+  }
+  window.addEventListener('resize', resync);
+  window.addEventListener('orientationchange', function() { cpBaseH = 0; setTimeout(resync, 250); });
+
+  // The drawer is the only thing that scrolls: dragging on the veil or the header
+  // must not drag the page.
+  overlay.addEventListener('touchmove', function(e) {
+    if (!e.target.closest('.cp-messages') && !e.target.closest('.cp-input')) e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && overlay.classList.contains('open')) closeConcierge();
+  });
+
+  // Tapping "send" must not close the phone keyboard: the text box keeps the focus,
+  // as in a messaging app.
+  var sendBtn = document.getElementById('cp-send');
+  if (sendBtn) {
+    sendBtn.addEventListener('mousedown', function(e) { e.preventDefault(); });
+    sendBtn.addEventListener('touchend', function(e) {
+      var t = e.changedTouches && e.changedTouches[0];
+      var el = t ? document.elementFromPoint(t.clientX, t.clientY) : sendBtn;
+      e.preventDefault(); // no focus change, and no second "click"
+      if (el && sendBtn.contains(el)) cpSend();
+    }, { passive: false });
+  }
+
+  // Every reservation button on the site opens the concierge instead of WhatsApp or the dialler.
+  document.addEventListener('click', function(e) {
+    var cta = e.target.closest && e.target.closest('[data-concierge="reservation"]');
+    if (!cta) return;
+    e.preventDefault();
+    openConcierge('reservation');
+  });
+
+  // The launcher always clears the sticky booking bar.
+  var bar = document.getElementById('bookbar');
+  var liftLauncher = function() {
+    var root = document.documentElement;
+    if (bar && bar.classList.contains('up')) {
+      root.style.setProperty('--fab-lift', bar.offsetHeight + 'px');
+      root.style.setProperty('--fab-gap', '12px');
+    } else {
+      root.style.removeProperty('--fab-lift');
+      root.style.removeProperty('--fab-gap');
+    }
+  };
+  if (bar) {
+    if (window.MutationObserver) new MutationObserver(liftLauncher).observe(bar, { attributes: true, attributeFilter: ['class'] });
+    window.addEventListener('resize', liftLauncher);
+    liftLauncher();
+  }
+})();
 
 // ── Message rendering ────────────────────────────
 function cpMarkdown(text) {
@@ -2348,7 +2638,7 @@ function cpAddBot(text, handoff) {
   }
   var msgs = document.getElementById('cp-messages');
   msgs.appendChild(div);
-  msgs.scrollTop = msgs.scrollHeight;
+  cpScrollDown(false);
 }
 
 function cpAddUser(text) {
@@ -2358,7 +2648,7 @@ function cpAddUser(text) {
   div.textContent = text;
   var msgs = document.getElementById('cp-messages');
   msgs.appendChild(div);
-  msgs.scrollTop = msgs.scrollHeight;
+  cpScrollDown(true); // the guest just wrote: always show it
 }
 
 function cpShowTyping() {
@@ -2368,7 +2658,7 @@ function cpShowTyping() {
   div.innerHTML = '<div class="cp-typing-dots"><span></span><span></span><span></span></div>';
   var msgs = document.getElementById('cp-messages');
   msgs.appendChild(div);
-  msgs.scrollTop = msgs.scrollHeight;
+  cpScrollDown(false);
 }
 
 function cpHideTyping() {
@@ -2381,6 +2671,7 @@ async function cpSend() {
   var input = document.getElementById('cp-input');
   var text = input.value.trim();
   if (!text || cpLoading) return;
+  var keepFocus = cpFinePointer.matches || document.activeElement === input;
 
   input.value = '';
   cpAutoResize(input);
@@ -2444,7 +2735,7 @@ async function cpSend() {
 
   cpLoading = false;
   document.getElementById('cp-send').disabled = false;
-  input.focus();
+  if (keepFocus) input.focus();
 }
 
 function cpKeydown(e) {
@@ -2464,27 +2755,17 @@ function cpAutoResize(el) {
   var navLogo = document.querySelector('.nav-logo');
   var logoSrc = navLogo ? navLogo.src : '';
 
-  // FAB button
-  var fab = document.getElementById('concierge-fab-btn');
-  if (fab) {
+  // Launcher avatar
+  var avatar = document.getElementById('fab-avatar');
+  if (avatar) {
     if (logoSrc) {
       var img = document.createElement('img');
       img.src = logoSrc;
-      img.className = 'fab-logo';
-      img.alt = 'Pepe Luis';
-      fab.appendChild(img);
+      img.alt = '';
+      avatar.appendChild(img);
     } else {
-      fab.style.background = 'var(--g,#1B4332)';
-      fab.style.fontFamily = "'Playfair Display', serif";
-      fab.style.fontSize = '1.2rem';
-      fab.style.fontStyle = 'italic';
-      fab.style.color = 'var(--gld,#C9A84C)';
-      fab.style.letterSpacing = '-.02em';
-      fab.textContent = 'PL';
+      avatar.textContent = 'PL';
     }
-    var pulse = document.createElement('div');
-    pulse.className = 'fab-pulse';
-    fab.appendChild(pulse);
   }
 
   // Chat header icon
