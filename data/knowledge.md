@@ -7,7 +7,7 @@ Address as shown on the site (a Google Maps location code; the site gives no str
 Directions: https://www.google.com/maps/dir/?api=1&destination=Pepe+Luis+Casablanca
 Phone: 06 19 53 69 33 (+212619536933) · WhatsApp: +212619536933 · Instagram: @pepeluiscasablanca
 Reservations: by phone or WhatsApp
-Services: Dîner sur place · Livraison · Click & Collect
+Services: Dîner sur place
 Highlights: Ouvert 7j/7 — 12h – Minuit · Entrées offertes — À chaque repas · Produits frais — Du marché chaque jour · Ouvert Toute l'Année · Produits Frais du Marché · Cuisine au feu de bois
 Google rating: 4.4 / 5 — 4 000+ avis Google
 About: Fruits de mer d'exception, paella légendaire, et l'âme de l'Espagne au cœur de Casablanca. Chez Pepe Luis, chaque assiette raconte une histoire. Celle de la Méditerranée, des marchés espagnols et d'une passion intacte pour les produits frais. Restaurant, marisquería et brasserie : un lieu unique à Casablanca.
@@ -50,7 +50,7 @@ Langouste — 110 / 100g
 (note) Demandez à voir le présentoir de poissons et fruits de mer
 
 [Assortiments | EN: Platters]
-Friture Mixte (to share) — Solettes, merlans, calamars, crevettes et sauce aïoli — 250 dhs
+Friture Mixte — Solettes, merlans, calamars, crevettes et sauce aïoli — 250 dhs
 Plateau l'Écailler (to share) — Langouste, crevettes, crevettes impériales, huîtres, mayonnaise maison — 200 dhs / personne (min 2 pers.)
 Parillada de Pescados (to share) — Loup ou daurade, saint pierre, assortiment de sauces maison — 275 dhs / personne (min 2 pers.)
 Parillada Mixta (to share) — Loup ou daurade, saint pierre, huîtres gratinées, assortiment de sauces maison — 275 dhs / personne (min 2 pers.)

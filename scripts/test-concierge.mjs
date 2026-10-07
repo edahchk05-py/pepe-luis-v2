@@ -326,5 +326,37 @@ const all = logs.join("\n");
 check("B6 logs never contain the key, names, phone numbers or message text", !all.includes(FAKE_KEY) && !all.includes("Edah") && !all.includes("0612345678") && !all.includes("yes please"));
 check("B6 logs record the reservation stage transitions", /"evt":"turn".*"stageBefore":"awaiting_confirmation".*"stageAfter":"confirmed".*"handoff":true/.test(all));
 
+// ── Part C: the page and the knowledge built from it (client-eyes fixes) ──
+const { readFileSync } = await import("node:fs");
+const { parse } = await import("node-html-parser");
+const pageHtml = readFileSync(process.cwd() + "/index.html", "utf8");
+const page = parse(pageHtml);
+const flat = (x) => String(x).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+
+const cards = page.querySelectorAll(".reviews-grid .rcard-text");
+check("C1 three review cards", cards.length === 3);
+check("C1 French review text is in data-fr (not empty) and equals what the page shows", cards.every((c) => flat(c.getAttribute("data-fr")).length > 40 && flat(c.getAttribute("data-fr")) === flat(c.text)));
+check("C1 English review text is not empty", cards.every((c) => flat(c.getAttribute("data-en")).length > 40));
+check("C1 review wording unchanged (starts as before)", flat(cards[0].text).startsWith('"J\'adore la paella') && flat(cards[1].text).startsWith('"Restaurant espagnol incroyable') && flat(cards[2].text).startsWith('"Nous avons découvert'));
+const pq = page.querySelector(".paella-quote");
+check("C2 Paella Negra quote complete in French (data-fr)", flat(pq.getAttribute("data-fr")) === flat(pq.text) && flat(pq.getAttribute("data-fr")).endsWith('inoubliable."'));
+const forbidden = ["Concept de site web", "Independent website concept", "Note vérifiée", "Verified Rating", "Client Vérifié", "Verified Customer", "Livraison", "Click &amp; Collect", "Click & Collect", "Paella Valenciana", "Palourdes Marinière", "Friture de Poisson"];
+const present = forbidden.filter((f) => pageHtml.includes(f));
+check("C3 unsupported / demo wording is gone from the page", present.length === 0, present.join(" | "));
+check("C3 Services line says dine-in only", flat(page.querySelector("#visit .vgroup:nth-of-type(4) .vval")?.text ?? "") === "Dîner sur place" || pageHtml.includes('data-fr="Dîner sur place" data-en="Dine In"'));
+check("C4 menu is untouched (fingerprint of the live commit 8c82dd3)", JSON.parse(readFileSync(process.cwd() + "/data/site-facts.json", "utf8")).menu.fingerprint === "147b5f5e41b916446dd9ae7478d9fd507e8ce6c67ff37cbdb486662a966b2193");
+check("C5 concierge opening text follows the language (no hard-coded French greeting)", !pageHtml.includes("cpAddBot('Bienvenido à Pepe Luis") && /welcome: 'Welcome to Pepe Luis/.test(pageHtml) && /placeholder: 'Ask your question/.test(pageHtml) && /placeholder: 'Posez votre question/.test(pageHtml));
+check("C5 reservation buttons still open the concierge", /openConcierge\('reservation'\)/.test(pageHtml) && page.querySelectorAll('[data-concierge="reservation"]').length >= 5);
+
+const knowledge = readFileSync(process.cwd() + "/data/knowledge.md", "utf8");
+check("C6 knowledge: services = dine-in only", /^Services: Dîner sur place$/m.test(knowledge) && !/Livraison|Click/.test(knowledge));
+check("C6 knowledge: Friture Mixte is not 'to share'", /^Friture Mixte — Solettes/m.test(knowledge) && !/Friture Mixte \(to share\)/.test(knowledge));
+check("C6 knowledge: platters that state a number of people keep 'to share'", /^Plateau l'Écailler \(to share\)/m.test(knowledge) && /^Parillada Real \(to share\)/m.test(knowledge));
+check("C7 knowledge: address, directions link and phone are the page's own", knowledge.includes("H9Q6+F2Q, Casablanca 20250, Maroc") && knowledge.includes("https://www.google.com/maps/dir/?api=1&destination=Pepe+Luis+Casablanca") && knowledge.includes("06 19 53 69 33"));
+const instruction = T.buildSystemInstruction({ date: "2026-10-05", time: "21:10" }, null, "où êtes-vous ?");
+check("C7 instructions: address rule — verified address + directions + phone, never an invented street", /Address: give it exactly as the KNOWLEDGE shows it/.test(instruction) && /never add a street, district or landmark/.test(instruction));
+check("C8 instructions: portions only when the knowledge says so", /Portions: say a dish is "to share"/.test(instruction));
+check("C9 Gemini models and request shape untouched", mod.__test && /gemini-3\.5-flash-lite/.test(readFileSync(process.cwd() + "/api/chat.js", "utf8")) && /gemini-3\.8-flash/.test(readFileSync(process.cwd() + "/api/chat.js", "utf8")));
+
 realLog(`\n${failed === 0 ? "ALL PASSED" : failed + " FAILED"}`);
 process.exit(failed ? 1 : 0);

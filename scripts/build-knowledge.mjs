@@ -215,7 +215,13 @@ for (const section of sections) {
     if (e.type === "heading") out(`· ${e.fr} ·`);
     else if (e.type === "note") out(`(note) ${e.fr}`);
     else if (e.type === "item") out(`${e.name}${e.description ? ` — ${e.description}` : ""} — ${e.price}`);
-    else out(`${e.name} (to share)${e.description ? ` — ${e.description}` : ""} — ${e.price}`);
+    else {
+      // "(to share)" only where the site itself says so: a number of people in the price
+      // line ("min 2 pers.", "2–4 pers."). A platter with a bare price (Friture Mixte) is not
+      // described as being for sharing, and no portion size is invented for it.
+      const sharing = /\bpers/i.test(e.price) ? " (to share)" : "";
+      out(`${e.name}${sharing}${e.description ? ` — ${e.description}` : ""} — ${e.price}`);
+    }
   }
 }
 const markdown = lines.join("\n").trimEnd() + "\n";
