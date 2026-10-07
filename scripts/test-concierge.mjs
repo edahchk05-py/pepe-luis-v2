@@ -356,6 +356,9 @@ check("C7 knowledge: address, directions link and phone are the page's own", kno
 const instruction = T.buildSystemInstruction({ date: "2026-10-05", time: "21:10" }, null, "où êtes-vous ?");
 check("C7 instructions: address rule — verified address + directions + phone, never an invented street", /Address: give it exactly as the KNOWLEDGE shows it/.test(instruction) && /never add a street, district or landmark/.test(instruction));
 check("C8 instructions: portions only when the knowledge says so", /Portions: say a dish is "to share"/.test(instruction));
+check("C10 instructions: delivery / takeaway / Click & Collect — neither offered nor denied, say it is not available + phone", /Delivery, takeaway and Click & Collect: the site says nothing about them/.test(instruction) && /Never say the restaurant offers them, and never say it does not/.test(instruction) && /this information is not available and give the phone number/.test(instruction));
+check("C10 knowledge states nothing about delivery or takeaway", !/livraison|delivery|takeaway|emporter|click ?& ?collect/i.test(knowledge));
+check("C10 the delivery rule sits with the other facts rules (reservation rules unchanged)", instruction.indexOf("Delivery, takeaway and Click & Collect") > instruction.indexOf("FACTS") && instruction.indexOf("Delivery, takeaway and Click & Collect") < instruction.indexOf("RESERVATIONS"));
 check("C9 Gemini models and request shape untouched", mod.__test && /gemini-3\.5-flash-lite/.test(readFileSync(process.cwd() + "/api/chat.js", "utf8")) && /gemini-3\.8-flash/.test(readFileSync(process.cwd() + "/api/chat.js", "utf8")));
 
 realLog(`\n${failed === 0 ? "ALL PASSED" : failed + " FAILED"}`);
